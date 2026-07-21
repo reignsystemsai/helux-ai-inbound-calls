@@ -1,7 +1,7 @@
 {
-  "name": "helux-ai-workforce",
+  "name": "helux-ai-inbound-calls",
   "version": "1.0.0",
-  "description": "HELUX AI workforce and DPA outbound calling service",
+  "description": "HELUX AI inbound-call demo for the DPA Help Center",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {

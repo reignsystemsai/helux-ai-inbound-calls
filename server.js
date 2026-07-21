@@ -582,8 +582,8 @@ async function createConfirmedAppointment({ pool, input, now = new Date() }) {
 }
 
 /*
- * HELUX AI WORKFORCE - DAISY 3.2.0
- * Daisy, Doug's assistant: calling, resources, and two-way monday.com control.
+ * HELUX AI INBOUND CALLS - DAISY INBOUND DEMO
+ * Daisy, the DPA Help Center inbound receptionist.
  * monday.com failures never block or terminate a customer call.
  */
 
@@ -598,7 +598,7 @@ const HELUX_RESULTS_PATH =
   process.env.HELUX_RESULTS_PATH || "/api/v1/calls/results";
 
 const PUBLIC_BASE_URL = String(
-  process.env.PUBLIC_BASE_URL || "https://helux-ai-workforce.onrender.com"
+  process.env.PUBLIC_BASE_URL || "https://helux-ai-inbound-calls.onrender.com"
 ).replace(/\/+$/, "");
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -612,9 +612,14 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
 const SPECIALIST_PHONE_NUMBER = process.env.SPECIALIST_PHONE_NUMBER || "";
+const OUTBOUND_LOOKUP_URL = cleanText(process.env.OUTBOUND_LOOKUP_URL, 1000);
+const OUTBOUND_LOOKUP_API_KEY = cleanText(
+  process.env.OUTBOUND_LOOKUP_API_KEY,
+  1000
+);
 
 const DPA_APPLICATION_URL =
-  process.env.DPA_APPLICATION_URL || "https://www.dpahelpcenter.com";
+  process.env.DPA_APPLICATION_URL || "https://dpahelpcenter.com";
 const DTI_CALCULATOR_URL =
   process.env.DTI_CALCULATOR_URL || "https://www.dpahelpcenter.com/dti";
 const PREPHUB_URL =
@@ -653,10 +658,7 @@ const DAISY_RESOURCE_LIBRARY = Object.freeze({
   }
 });
 
-const OUTBOUND_CALLS_ENABLED =
-  String(
-    process.env.OUTBOUND_CALLS_ENABLED || "false"
-  ).toLowerCase() === "true";
+const OUTBOUND_CALLS_ENABLED = false;
 const ENFORCE_CALL_CONSENT =
   String(process.env.ENFORCE_CALL_CONSENT || "false").toLowerCase() ===
   "true";
@@ -683,11 +685,34 @@ const DAISY_MIN_TRANSCRIPT_SETTLE_MS = Math.max(
 const MONDAY_API_URL = "https://api.monday.com/v2";
 const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN || "";
 const MONDAY_API_VERSION = process.env.MONDAY_API_VERSION || "2026-04";
-const MONDAY_BOARD_ID = String(
-  process.env.MONDAY_BOARD_ID || "18421626660"
-);
-const MONDAY_SUBITEM_BOARD_ID = String(
-  process.env.MONDAY_SUBITEM_BOARD_ID || "18421626716"
+const INBOUND_MONDAY = Object.freeze({
+  boards: Object.freeze({
+    inbound: String(process.env.INBOUND_BOARD_ID || "18422988712"),
+    subitems: String(process.env.INBOUND_SUBITEM_BOARD_ID || "18422988748")
+  }),
+  groups: Object.freeze({
+    newInboundCalls: "topics",
+    formLinkSent: "group_mm5ed1xf",
+    existingApplicantFollowUp: "group_mm5edjt",
+    transferredToOutbound: "group_mm5ee1qb",
+    closed: "group_mm5eabbk"
+  }),
+  columns: Object.freeze({
+    name: "name",
+    callerType: "color_mm5es68d",
+    priority: "color_mm5erfwt",
+    assignedTo: "multiple_person_mm5exyzj",
+    nextFollowUp: "date_mm5ew2hf",
+    inboundStatus: "color_mm5eeeh",
+    leadSource: "dropdown_mm5ee9cs",
+    followUpNeeded: "color_mm5e49b8",
+    subitems: "subtasks_mm5et3dw"
+  })
+});
+const MONDAY_BOARD_ID = INBOUND_MONDAY.boards.inbound;
+const MONDAY_SUBITEM_BOARD_ID = INBOUND_MONDAY.boards.subitems;
+const INBOUND_MONDAY_CONNECTED = Boolean(
+  MONDAY_API_TOKEN && MONDAY_BOARD_ID && MONDAY_SUBITEM_BOARD_ID
 );
 const DPA_BOARD_ID = cleanText(process.env.DPA_BOARD_ID, 100);
 const MONDAY_CALL_CONTROL_COLUMNS = Object.freeze({
@@ -701,8 +726,7 @@ const DPA_DEPARTMENT_COLUMNS = Object.freeze({
   realtor_name: "text_mm57ngpn",
   realtor_phone: "phone_mm5790vb"
 });
-const MONDAY_SYNC_REQUESTED =
-  String(process.env.MONDAY_SYNC_ENABLED || "false").toLowerCase() === "true";
+const MONDAY_SYNC_REQUESTED = false;
 const MONDAY_SYNC_ENABLED = Boolean(
   MONDAY_SYNC_REQUESTED &&
     MONDAY_API_TOKEN &&
@@ -753,12 +777,12 @@ if (missingEnvironment.length) {
 }
 
 const DOUG_CONFIG = Object.freeze({
-  agentVersion: "daisy-3.2.0",
-  promptVersion: "dpa-call-noise-resistant-v3.2",
-  toolVersion: "intent-actions-v3.0",
+  agentVersion: "daisy-inbound-demo-1.0.0",
+  promptVersion: "dpa-inbound-test-v1",
+  toolVersion: "inbound-actions-v1",
   knowledgeVersion: "dpa-general-v1",
   routingVersion: "dpa-routing-v1",
-  mondayAdapterVersion: "monday-call-control-v2.5-compatible",
+  mondayAdapterVersion: "monday-inbound-demo-v1",
   voiceRules: {
     maximumResponseSeconds: 12,
     questionsPerTurn: 1,
@@ -784,6 +808,7 @@ const mediaServer = new WebSocketServer({ noServer: true });
 
 let mondayMetadataCache = null;
 let mondayMetadataExpiresAt = 0;
+let inboundMondayConnectionHealthy = false;
 const mondaySyncTimers = new Map();
 const mondaySyncChains = new Map();
 
@@ -1103,6 +1128,82 @@ function confirmedConsent(payload) {
   if (explicit !== null) return explicit;
   const status = String(payload.consent_status || "").toLowerCase();
   return ["confirmed", "granted", "approved", "yes"].includes(status);
+}
+
+const DAISY_INBOUND_TEST_SCRIPT = `
+You are Daisy, the inbound AI receptionist for the DPA Help Center.
+
+Speak naturally, warmly, confidently, and briefly.
+
+Never invent customer information, program approval, assistance amounts, timelines, or application status.
+Never mention tools, databases, Monday.com, Render, Twilio, or APIs.
+Ask one question at a time. Use no filler, narration, or spoken internal reasoning.
+Do not restart the greeting after an interruption. After a brief related question, answer concisely and resume the pending question.
+
+Known caller phone: {caller_phone}
+Known caller name: {caller_name}
+Lead source: {lead_source}
+
+Opening:
+"Thank you for calling the DPA Help Center. This is Daisy. How can I help you today?"
+
+Classify the caller as exactly one of NEW_DPA_INQUIRY, EXISTING_APPLICATION_FOLLOWUP, or OTHER. Use save_inbound_caller_context to save the classification and any caller details learned. Ask for the caller's first name if it is not known.
+
+For NEW_DPA_INQUIRY:
+Explain exactly:
+"The first step is completing the short form on dpahelpcenter.com. After that, our two-call process helps confirm your information and prepare you for the homebuying professionals who assist with the next steps."
+
+Then ask exactly:
+"Would you like me to text you the form link?"
+
+When they agree, use the known caller phone when it is usable. Only ask for and save a mobile number when the known caller phone is unavailable or unusable. Use send_inbound_form_link. Only when the tool returns success true, say exactly:
+"I just sent it. Complete the form as soon as you can so the next step can begin."
+
+For EXISTING_APPLICATION_FOLLOWUP:
+Say exactly:
+"I can help check where you are in the process. Let me first locate your information."
+
+Use lookup_existing_outbound_applicant with the caller phone first. Ask for email or name only when needed.
+
+If found:
+- State only the returned status.
+- Ask whether they completed both calls.
+- Ask when they completed the application only if that information is missing.
+- Use create_inbound_follow_up when help is needed.
+- Use transfer_inbound_to_outbound only when the caller needs the existing outbound team. This updates CRM routing and never places a call.
+
+If not found, say exactly:
+"I wasn't able to locate the application from this phone number. What email address did you use?"
+
+Never claim an application was found unless the lookup tool returned found true. A not_configured lookup is not a match.
+
+For OTHER or unsupported questions, say exactly:
+"I can help with down payment assistance information, the form, or following up on an existing application."
+
+Before closing, ask exactly:
+"Is there anything else I can help you with today?"
+
+When finished, invoke complete_call. After it succeeds, the server says exactly:
+"Thank you for calling the DPA Help Center. Please feel free to hang up and disconnect the call."
+
+Do not add another closing before or after the server closing.
+`.trim();
+
+function buildDaisyInboundInstructions(call) {
+  const payload = call?.payload || {};
+  const callerPhone = validE164Phone(call?.phone)
+    ? `provided, ending in ${String(call.phone).slice(-4)}`
+    : "not provided";
+  const callerName = cleanText(
+    payload.first_name || payload.customer_name || payload.name,
+    160
+  ) || "not provided";
+  const leadSource = cleanText(payload.lead_source, 160) || "not provided";
+
+  return DAISY_INBOUND_TEST_SCRIPT
+    .replaceAll("{caller_phone}", callerPhone)
+    .replaceAll("{caller_name}", callerName)
+    .replaceAll("{lead_source}", leadSource);
 }
 
 const DOUGLAS_DAISY_SCRIPT = String.raw`
@@ -1450,6 +1551,10 @@ Daisy must never:
 `;
 
 function resolveSessionCallPhase(call, attempt = null) {
+  if (
+    call?.direction === "inbound" ||
+    normalizeMondayKey(call?.payload?.direction) === "inbound"
+  ) return "INBOUND";
   const callType = normalizeMondayKey(call?.payload?.call_type);
   const outboundReason = normalizeMondayKey(
     call?.result?.outbound_call_reason || call?.payload?.outbound_call_reason
@@ -1746,11 +1851,63 @@ const DOUG_TOOLS = [
   }
 ];
 
-const REALTIME_TOOLS = Object.freeze(
-  BASE_REALTIME_TOOLS.filter(
-    (toolDefinition) => toolDefinition.name !== "send_resource_link"
-  )
-);
+const INBOUND_TOOLS = Object.freeze([
+  inlineTool(
+    "save_inbound_caller_context",
+    "Save the inbound caller classification and confirmed contact details.",
+    {
+      intent: {
+        type: "string",
+        enum: ["NEW_DPA_INQUIRY", "EXISTING_APPLICATION_FOLLOWUP", "OTHER"]
+      },
+      first_name: { type: ["string", "null"] },
+      mobile_phone: { type: ["string", "null"] },
+      email: { type: ["string", "null"] },
+      lead_source: { type: ["string", "null"] }
+    },
+    ["intent"]
+  ),
+  inlineTool(
+    "send_inbound_form_link",
+    "Send the DPA Help Center form link by SMS after the caller agrees.",
+    {
+      consent_confirmed: { type: "boolean" },
+      mobile_phone: { type: ["string", "null"] }
+    },
+    ["consent_confirmed"]
+  ),
+  inlineTool(
+    "lookup_existing_outbound_applicant",
+    "Look up an existing outbound applicant without fabricating a result.",
+    {
+      email: { type: ["string", "null"] },
+      name: { type: ["string", "null"] }
+    },
+    []
+  ),
+  inlineTool(
+    "create_inbound_follow_up",
+    "Create an inbound CRM follow-up request when an existing applicant needs help.",
+    {
+      reason: { type: "string" },
+      priority: { type: "string", enum: ["normal", "high", "urgent"] },
+      next_follow_up: { type: ["string", "null"] }
+    },
+    ["reason", "priority"]
+  ),
+  inlineTool(
+    "transfer_inbound_to_outbound",
+    "Route the CRM record to the existing outbound team without placing an outbound call.",
+    {
+      reason: { type: "string" },
+      priority: { type: "string", enum: ["normal", "high", "urgent"] }
+    },
+    ["reason", "priority"]
+  ),
+  DOUG_TOOLS.find((toolDefinition) => toolDefinition.name === "complete_call")
+]);
+
+const REALTIME_TOOLS = INBOUND_TOOLS;
 
 async function runMigrationStep(name, sql, options = {}) {
   const { optional = false } = options;
@@ -1764,7 +1921,7 @@ async function runMigrationStep(name, sql, options = {}) {
 }
 
 async function initializeDatabase() {
-  console.log("Initializing HELUX AI Workforce database...");
+  console.log("[INBOUND] Initializing database.");
 
   await runMigrationStep(
     "create ai_calls",
@@ -1794,6 +1951,8 @@ async function initializeDatabase() {
   );
 
   const aiCallColumns = [
+    ["direction", "VARCHAR(20) NOT NULL DEFAULT 'inbound'"],
+    ["intent", "VARCHAR(80)"],
     ["sequence_status", "VARCHAR(50) NOT NULL DEFAULT 'ready'"],
     ["timezone", "VARCHAR(100) NOT NULL DEFAULT 'America/New_York'"],
     ["consent_status", "VARCHAR(50) NOT NULL DEFAULT 'unverified'"],
@@ -2019,7 +2178,7 @@ async function initializeDatabase() {
     await runMigrationStep(name, sql, { optional: true });
   }
 
-  console.log("HELUX AI Workforce database initialized.");
+  console.log("[INBOUND] Database initialized.");
 }
 
 async function getCallById(callId) {
@@ -2719,6 +2878,296 @@ async function mondayRequest(query, variables = {}, options = {}) {
 
   throw new Error("monday.com request failed after retries.");
 }
+
+let inboundMondayMetadataCache = null;
+
+function inboundLog(prefix, event, details = {}) {
+  console.log(`${prefix} ${JSON.stringify({ event, ...details })}`);
+}
+
+function maskedPhoneLastFour(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits ? `***${digits.slice(-4)}` : null;
+}
+
+async function mondayGraphql(query, variables = {}) {
+  if (!INBOUND_MONDAY_CONNECTED) {
+    throw new Error("Inbound monday.com is not configured.");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MONDAY_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(MONDAY_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: MONDAY_API_TOKEN,
+        "Content-Type": "application/json",
+        "API-Version": MONDAY_API_VERSION
+      },
+      body: JSON.stringify({ query, variables }),
+      signal: controller.signal
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(`monday.com HTTP ${response.status}`);
+    if (Array.isArray(body.errors) && body.errors.length) {
+      throw new Error(
+        `monday.com GraphQL error: ${body.errors
+          .map((entry) => cleanText(entry.message, 300))
+          .filter(Boolean)
+          .join(" | ")}`
+      );
+    }
+    inboundMondayConnectionHealthy = true;
+    return body.data || {};
+  } catch (error) {
+    inboundMondayConnectionHealthy = false;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function loadInboundMondayMetadata(force = false) {
+  if (inboundMondayMetadataCache && !force) return inboundMondayMetadataCache;
+  const data = await mondayGraphql(
+    `query InboundBoardMetadata($boardIds: [ID!]!) {
+      boards(ids: $boardIds) {
+        id
+        name
+        groups { id title }
+        columns { id title type settings }
+      }
+    }`,
+    { boardIds: [MONDAY_BOARD_ID] }
+  );
+  const board = data.boards?.[0];
+  if (!board) throw new Error("Inbound monday.com board was not found.");
+  inboundMondayMetadataCache = {
+    ...board,
+    columns: (board.columns || []).map((column) => ({
+      ...column,
+      settings: parseMondaySettings(column.settings)
+    }))
+  };
+  return inboundMondayMetadataCache;
+}
+
+function inboundMondayColumn(metadata, columnId) {
+  return metadata?.columns?.find((column) => column.id === columnId) || null;
+}
+
+function inboundMondayColumnByTitle(metadata, titles) {
+  const desired = titles.map(normalizeMondayKey);
+  return metadata?.columns?.find((column) =>
+    desired.includes(normalizeMondayKey(column.title))
+  ) || null;
+}
+
+function resolveInboundMondayLabel(column, desiredLabel) {
+  if (!column || !desiredLabel) return null;
+  const labels = column.settings?.labels;
+  const values = Array.isArray(labels)
+    ? labels.map((entry) => entry?.name || entry).filter(Boolean)
+    : Object.values(labels || {}).map((entry) => entry?.name || entry).filter(Boolean);
+  return values.find(
+    (value) => normalizeMondayKey(value) === normalizeMondayKey(desiredLabel)
+  ) || null;
+}
+
+async function inboundMondayValues(data = {}) {
+  const metadata = await loadInboundMondayMetadata();
+  const values = {};
+  const statusFields = [
+    [INBOUND_MONDAY.columns.callerType, data.caller_type],
+    [INBOUND_MONDAY.columns.priority, data.priority],
+    [INBOUND_MONDAY.columns.inboundStatus, data.inbound_status],
+    [INBOUND_MONDAY.columns.followUpNeeded, data.follow_up_needed]
+  ];
+  for (const [columnId, desiredLabel] of statusFields) {
+    if (!desiredLabel) continue;
+    const column = inboundMondayColumn(metadata, columnId);
+    const label = resolveInboundMondayLabel(column, desiredLabel);
+    if (label) values[columnId] = { label };
+    else inboundLog("[MONDAY]", "label_not_found", { column_id: columnId, desired_label: desiredLabel });
+  }
+  if (data.lead_source) {
+    const column = inboundMondayColumn(metadata, INBOUND_MONDAY.columns.leadSource);
+    const label = resolveInboundMondayLabel(column, data.lead_source);
+    if (label) values[INBOUND_MONDAY.columns.leadSource] = { labels: [label] };
+  }
+  if (data.next_follow_up) {
+    const date = new Date(data.next_follow_up);
+    if (!Number.isNaN(date.getTime())) {
+      values[INBOUND_MONDAY.columns.nextFollowUp] = {
+        date: date.toISOString().slice(0, 10)
+      };
+    }
+  }
+  if (data.phone) {
+    const phoneColumn = inboundMondayColumnByTitle(metadata, ["Caller Phone", "Phone", "Mobile Phone"]);
+    if (phoneColumn) {
+      values[phoneColumn.id] = {
+        phone: data.phone,
+        countryShortName: "US"
+      };
+    }
+  }
+  return values;
+}
+
+async function findInboundCallerByPhone(phone) {
+  const normalized = normalizePhone(phone);
+  if (!normalized || !INBOUND_MONDAY_CONNECTED) return null;
+  const metadata = await loadInboundMondayMetadata();
+  const phoneColumn = inboundMondayColumnByTitle(metadata, ["Caller Phone", "Phone", "Mobile Phone"]);
+  if (!phoneColumn) return null;
+  const data = await mondayGraphql(
+    `query FindInboundCaller($boardIds: [ID!]!) {
+      boards(ids: $boardIds) {
+        items_page(limit: 100) {
+          items { id name group { id } column_values { id text value } }
+        }
+      }
+    }`,
+    { boardIds: [MONDAY_BOARD_ID] }
+  );
+  const items = data.boards?.[0]?.items_page?.items || [];
+  return items.find((item) => {
+    const value = item.column_values?.find((column) => column.id === phoneColumn.id);
+    return normalizePhone(value?.text) === normalized;
+  }) || null;
+}
+
+async function createInboundCallerItem(data = {}) {
+  const phone = normalizePhone(data.phone);
+  const itemName = cleanText(data.name, 160) ||
+    `Inbound Caller - ${String(phone || "unknown").slice(-4)}`;
+  const columnValues = await inboundMondayValues({ ...data, phone });
+  const result = await mondayGraphql(
+    `mutation CreateInboundCaller($boardId: ID!, $groupId: String!, $itemName: String!, $columnValues: JSON!) {
+      create_item(board_id: $boardId, group_id: $groupId, item_name: $itemName, column_values: $columnValues) { id name }
+    }`,
+    {
+      boardId: MONDAY_BOARD_ID,
+      groupId: INBOUND_MONDAY.groups.newInboundCalls,
+      itemName,
+      columnValues: JSON.stringify(columnValues)
+    }
+  );
+  const item = result.create_item || null;
+  inboundLog("[MONDAY]", "inbound_item_created", {
+    item_id: item?.id || null,
+    caller_phone: maskedPhoneLastFour(phone)
+  });
+  return item;
+}
+
+async function updateInboundCallerItem(itemId, data = {}) {
+  if (!itemId) return null;
+  const columnValues = await inboundMondayValues(data);
+  let updated = { id: String(itemId) };
+  if (Object.keys(columnValues).length) {
+    const result = await mondayGraphql(
+      `mutation UpdateInboundCaller($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+        change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) { id }
+      }`,
+      {
+        boardId: MONDAY_BOARD_ID,
+        itemId: String(itemId),
+        columnValues: JSON.stringify(columnValues)
+      }
+    );
+    updated = result.change_multiple_column_values || updated;
+  }
+  const name = cleanText(data.name, 160);
+  if (name) {
+    const result = await mondayGraphql(
+      `mutation RenameInboundCaller($boardId: ID!, $itemId: ID!, $name: String!) {
+        change_simple_column_value(board_id: $boardId, item_id: $itemId, column_id: "name", value: $name) { id }
+      }`,
+      { boardId: MONDAY_BOARD_ID, itemId: String(itemId), name }
+    );
+    updated = result.change_simple_column_value || updated;
+  }
+  return updated;
+}
+
+async function moveInboundCallerToGroup(itemId, groupId) {
+  if (!itemId || !groupId) return null;
+  const result = await mondayGraphql(
+    `mutation MoveInboundCaller($itemId: ID!, $groupId: String!) {
+      move_item_to_group(item_id: $itemId, group_id: $groupId) { id }
+    }`,
+    { itemId: String(itemId), groupId }
+  );
+  return result.move_item_to_group || null;
+}
+
+async function createInboundFollowUpRecord(itemId, reason) {
+  if (!itemId) return null;
+  const itemName = `Inbound follow-up - ${cleanText(reason, 100) || "Caller assistance requested"}`;
+  const result = await mondayGraphql(
+    `mutation CreateInboundFollowUp($parentItemId: ID!, $itemName: String!) {
+      create_subitem(parent_item_id: $parentItemId, item_name: $itemName) { id name }
+    }`,
+    { parentItemId: String(itemId), itemName }
+  );
+  return result.create_subitem || null;
+}
+
+async function saveInboundCallSummary(data = {}) {
+  const callId = cleanText(data.call_id, 100);
+  if (!callId) return null;
+  await pool.query(
+    `UPDATE ai_calls SET intent = COALESCE($2, intent), outcome = COALESCE($3, outcome),
+       summary = COALESCE($4, summary), next_action = COALESCE($5, next_action),
+       updated_at = NOW() WHERE call_id = $1`,
+    [callId, cleanText(data.intent, 80), cleanText(data.outcome, 80), cleanText(data.summary, 4000), cleanText(data.next_action, 2000)]
+  );
+  const call = await getCallById(callId);
+  if (!call?.monday_item_id || !INBOUND_MONDAY_CONNECTED) return call;
+  try {
+    await updateInboundCallerItem(call.monday_item_id, data);
+    if (data.group_id) await moveInboundCallerToGroup(call.monday_item_id, data.group_id);
+  } catch (error) {
+    inboundLog("[MONDAY]", "summary_update_failed", {
+      call_id: callId,
+      error: cleanText(error.message, 300)
+    });
+  }
+  return call;
+}
+
+async function ensureInboundMondayCaller(call) {
+  if (!call || !INBOUND_MONDAY_CONNECTED) return null;
+  try {
+    const existing = await findInboundCallerByPhone(call.phone);
+    const item = existing || await createInboundCallerItem({
+      phone: call.phone,
+      name: call.payload?.first_name || call.payload?.customer_name || call.payload?.name,
+      lead_source: call.payload?.lead_source,
+      inbound_status: "New Inbound Call",
+      follow_up_needed: "No"
+    });
+    if (item?.id) {
+      await pool.query(
+        `UPDATE ai_calls SET monday_item_id = $2, monday_group_id = $3,
+         monday_last_sync_at = NOW(), monday_last_error = NULL, updated_at = NOW()
+         WHERE call_id = $1`,
+        [call.call_id, String(item.id), item.group?.id || INBOUND_MONDAY.groups.newInboundCalls]
+      );
+    }
+    return item;
+  } catch (error) {
+    inboundLog("[MONDAY]", "inbound_item_sync_failed", {
+      call_id: call.call_id,
+      caller_phone: maskedPhoneLastFour(call.phone),
+      error: cleanText(error.message, 300)
+    });
+    return null;
+  }
+}
+
 function buildMondayBoardMetadata(board) {
   const columns = Array.isArray(board.columns) ? board.columns : [];
   const groups = Array.isArray(board.groups) ? board.groups : [];
@@ -4460,6 +4909,13 @@ async function notifyHelux(call) {
 async function reconnectAfterUnexpectedDisconnect(callId) {
   const call = await getCallById(callId);
   if (!call || call.payload?.call_type === "dpa_agent_notification") return false;
+  if (call.direction === "inbound" || call.payload?.direction === "inbound") {
+    inboundLog("[INBOUND]", "reconnect_skipped", {
+      call_id: call.call_id,
+      reason: "inbound_calls_are_not_redialed"
+    });
+    return false;
+  }
   if (!call.last_attempt_id) return false;
 
   const attempt = await getAttemptById(call.last_attempt_id);
@@ -4927,6 +5383,342 @@ async function trackSmsMessage(callId, message, messageType) {
     ]
   );
 
+}
+
+async function lookupExistingOutboundApplicant({ phone, email, name }) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!OUTBOUND_LOOKUP_URL) {
+    return {
+      success: true,
+      found: false,
+      status: "not_configured",
+      message: "The outbound applicant lookup is not configured."
+    };
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (OUTBOUND_LOOKUP_API_KEY) {
+      headers.Authorization = `Bearer ${OUTBOUND_LOOKUP_API_KEY}`;
+    }
+    const response = await fetch(OUTBOUND_LOOKUP_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        phone: normalizedPhone,
+        email: cleanText(email, 320),
+        name: cleanText(name, 200)
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return {
+        success: false,
+        found: false,
+        status: "lookup_failed",
+        message: "The applicant lookup is temporarily unavailable."
+      };
+    }
+    const body = await response.json();
+    if (body?.found !== true) {
+      return {
+        success: true,
+        found: false,
+        status: cleanText(body?.status, 100) || "not_found",
+        message: "No matching applicant record was returned."
+      };
+    }
+    return {
+      success: true,
+      found: true,
+      status: cleanText(body.status, 500) || "Record located",
+      form_submitted: body.form_submitted === true,
+      call_one_status: cleanText(body.call_one_status, 200),
+      call_two_status: cleanText(body.call_two_status, 200),
+      application_completed_date: cleanText(body.application_completed_date, 100),
+      follow_up_needed: body.follow_up_needed === true
+    };
+  } catch (error) {
+    inboundLog("[INBOUND]", "outbound_lookup_failed", {
+      caller_phone: maskedPhoneLastFour(normalizedPhone),
+      error: cleanText(error.message, 300)
+    });
+    return {
+      success: false,
+      found: false,
+      status: "lookup_failed",
+      message: "The applicant lookup is temporarily unavailable."
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+const INBOUND_TOOL_NAMES = new Set([
+  "save_inbound_caller_context",
+  "send_inbound_form_link",
+  "lookup_existing_outbound_applicant",
+  "create_inbound_follow_up",
+  "transfer_inbound_to_outbound"
+]);
+
+async function executeInboundTool(call, name, args) {
+  const safeArgs = args && typeof args === "object" ? args : {};
+
+  if (name === "save_inbound_caller_context") {
+    const intent = cleanText(safeArgs.intent, 80);
+    if (!["NEW_DPA_INQUIRY", "EXISTING_APPLICATION_FOLLOWUP", "OTHER"].includes(intent)) {
+      return { success: false, error: "A supported inbound intent is required." };
+    }
+    const suppliedPhone = cleanText(safeArgs.mobile_phone, 100);
+    const mobilePhone = suppliedPhone ? normalizePhone(suppliedPhone) : call.phone;
+    if (suppliedPhone && !mobilePhone) {
+      return { success: false, error: "The mobile phone number is invalid." };
+    }
+    const payloadPatch = {
+      first_name: cleanText(safeArgs.first_name, 100),
+      email: cleanText(safeArgs.email, 320),
+      lead_source: cleanText(safeArgs.lead_source, 160) || call.payload?.lead_source,
+      inbound_intent: intent
+    };
+    await pool.query(
+      `UPDATE ai_calls SET intent = $2, phone = COALESCE($3, phone),
+       payload = payload || $4::jsonb, result = result || $5::jsonb,
+       updated_at = NOW() WHERE call_id = $1`,
+      [
+        call.call_id,
+        intent,
+        mobilePhone,
+        JSON.stringify(payloadPatch),
+        JSON.stringify({ inbound_intent: intent, caller_email: payloadPatch.email })
+      ]
+    );
+    const mondayData = {
+      name: payloadPatch.first_name,
+      caller_type: intent === "EXISTING_APPLICATION_FOLLOWUP"
+        ? "Existing Applicant Follow-Up"
+        : intent === "NEW_DPA_INQUIRY"
+          ? "New DPA Inquiry"
+          : "Other",
+      lead_source: payloadPatch.lead_source,
+      phone: mobilePhone
+    };
+    if (call.monday_item_id && INBOUND_MONDAY_CONNECTED) {
+      try {
+        await updateInboundCallerItem(call.monday_item_id, mondayData);
+        if (intent === "EXISTING_APPLICATION_FOLLOWUP") {
+          await moveInboundCallerToGroup(
+            call.monday_item_id,
+            INBOUND_MONDAY.groups.existingApplicantFollowUp
+          );
+        }
+      } catch (error) {
+        inboundLog("[MONDAY]", "caller_context_update_failed", {
+          call_id: call.call_id,
+          error: cleanText(error.message, 300)
+        });
+      }
+    }
+    return { success: true, intent, caller_phone_available: Boolean(mobilePhone) };
+  }
+
+  if (name === "send_inbound_form_link") {
+    if (safeArgs.consent_confirmed !== true) {
+      return { success: false, error: "Caller agreement is required before sending SMS." };
+    }
+    const destination = normalizePhone(safeArgs.mobile_phone) || normalizePhone(call.phone);
+    if (!destination) {
+      return { success: false, error: "A usable mobile phone number is required." };
+    }
+    try {
+      const message = await twilioClient.messages.create({
+        to: destination,
+        from: TWILIO_FROM_NUMBER,
+        body: "DPA Help Center: Start here: https://dpahelpcenter.com. Complete the short form so we can begin your next steps. Reply STOP to opt out.",
+        statusCallback: smsStatusCallbackUrl(call)
+      });
+      await trackSmsMessage(call.call_id, message, "inbound_form_link");
+      await mergeCallResult(call.call_id, {
+        inbound_form_link_sent: true,
+        inbound_form_link_sms_sid: message.sid,
+        inbound_form_link_sms_status: cleanText(message.status, 50) || "accepted"
+      });
+      await appendAction(call.call_id, {
+        action: name,
+        success: true,
+        message_sid: message.sid
+      });
+      if (call.monday_item_id && INBOUND_MONDAY_CONNECTED) {
+        try {
+          await updateInboundCallerItem(call.monday_item_id, {
+            inbound_status: "Form Link Sent",
+            follow_up_needed: "No"
+          });
+          await moveInboundCallerToGroup(
+            call.monday_item_id,
+            INBOUND_MONDAY.groups.formLinkSent
+          );
+        } catch (error) {
+          inboundLog("[MONDAY]", "form_link_status_update_failed", {
+            call_id: call.call_id,
+            error: cleanText(error.message, 300)
+          });
+        }
+      }
+      inboundLog("[TWILIO]", "inbound_form_link_sent", {
+        call_id: call.call_id,
+        destination: maskedPhoneLastFour(destination),
+        message_sid: message.sid
+      });
+      return {
+        success: true,
+        status: cleanText(message.status, 50) || "accepted",
+        destination: maskedPhoneLastFour(destination)
+      };
+    } catch (error) {
+      await appendAction(call.call_id, {
+        action: name,
+        success: false,
+        error: cleanText(error.message, 500)
+      });
+      inboundLog("[TWILIO]", "inbound_form_link_failed", {
+        call_id: call.call_id,
+        destination: maskedPhoneLastFour(destination),
+        error: cleanText(error.message, 300)
+      });
+      return {
+        success: false,
+        error: "The form link could not be sent. A follow-up can be created instead."
+      };
+    }
+  }
+
+  if (name === "lookup_existing_outbound_applicant") {
+    const result = await lookupExistingOutboundApplicant({
+      phone: call.phone,
+      email: safeArgs.email || call.payload?.email,
+      name: safeArgs.name || call.payload?.first_name || call.payload?.name
+    });
+    await mergeCallResult(call.call_id, { outbound_applicant_lookup: result });
+    await appendAction(call.call_id, {
+      action: name,
+      success: result.success,
+      found: result.found,
+      status: result.status
+    });
+    return result;
+  }
+
+  if (name === "create_inbound_follow_up") {
+    const reason = cleanText(safeArgs.reason, 2000);
+    if (!reason) return { success: false, error: "A follow-up reason is required." };
+    const priority = ["normal", "high", "urgent"].includes(safeArgs.priority)
+      ? safeArgs.priority
+      : "normal";
+    const nextFollowUp = cleanText(safeArgs.next_follow_up, 100);
+    await pool.query(
+      `UPDATE ai_calls SET outcome = 'needs_review', priority = $2,
+       next_action = $3, result = result || $4::jsonb, updated_at = NOW()
+       WHERE call_id = $1`,
+      [
+        call.call_id,
+        priority,
+        reason,
+        JSON.stringify({
+          inbound_follow_up: { reason, priority, next_follow_up: nextFollowUp }
+        })
+      ]
+    );
+    await appendAction(call.call_id, {
+      action: name,
+      success: true,
+      priority,
+      next_follow_up: nextFollowUp
+    });
+    let followUpItem = null;
+    if (call.monday_item_id && INBOUND_MONDAY_CONNECTED) {
+      try {
+        await updateInboundCallerItem(call.monday_item_id, {
+          caller_type: "Existing Applicant Follow-Up",
+          inbound_status: "Follow-Up Needed",
+          follow_up_needed: "Yes",
+          priority,
+          next_follow_up: nextFollowUp
+        });
+        await moveInboundCallerToGroup(
+          call.monday_item_id,
+          INBOUND_MONDAY.groups.existingApplicantFollowUp
+        );
+        followUpItem = await createInboundFollowUpRecord(
+          call.monday_item_id,
+          reason
+        );
+      } catch (error) {
+        inboundLog("[MONDAY]", "follow_up_update_failed", {
+          call_id: call.call_id,
+          error: cleanText(error.message, 300)
+        });
+      }
+    }
+    return {
+      success: true,
+      follow_up_created: true,
+      follow_up_item_id: followUpItem?.id || null,
+      priority,
+      next_follow_up: nextFollowUp
+    };
+  }
+
+  if (name === "transfer_inbound_to_outbound") {
+    const reason = cleanText(safeArgs.reason, 2000);
+    if (!reason) return { success: false, error: "A transfer reason is required." };
+    const priority = ["normal", "high", "urgent"].includes(safeArgs.priority)
+      ? safeArgs.priority
+      : "normal";
+    await pool.query(
+      `UPDATE ai_calls SET outcome = 'specialist_handoff', priority = $2,
+       next_action = $3, result = result || $4::jsonb, updated_at = NOW()
+       WHERE call_id = $1`,
+      [
+        call.call_id,
+        priority,
+        reason,
+        JSON.stringify({ transferred_to_outbound: true, transfer_reason: reason })
+      ]
+    );
+    await appendAction(call.call_id, {
+      action: name,
+      success: true,
+      priority
+    });
+    if (call.monday_item_id && INBOUND_MONDAY_CONNECTED) {
+      try {
+        await updateInboundCallerItem(call.monday_item_id, {
+          inbound_status: "Transferred to Outbound",
+          follow_up_needed: "Yes",
+          priority
+        });
+        await moveInboundCallerToGroup(
+          call.monday_item_id,
+          INBOUND_MONDAY.groups.transferredToOutbound
+        );
+      } catch (error) {
+        inboundLog("[MONDAY]", "outbound_transfer_update_failed", {
+          call_id: call.call_id,
+          error: cleanText(error.message, 300)
+        });
+      }
+    }
+    return {
+      success: true,
+      transferred_to_outbound: true,
+      outbound_call_placed: false,
+      priority
+    };
+  }
+
+  return { success: false, error: `Unknown inbound tool: ${name}` };
 }
 
 async function executeDougTool(call, name, args, sessionCallPhase) {
@@ -5477,9 +6269,12 @@ async function executeDougTool(call, name, args, sessionCallPhase) {
 
 app.get("/", (req, res) => {
   res.json({
-    message: "HELUX AI Workforce is online.",
+    message: "HELUX AI inbound-call demo is online.",
+    service: "helux-ai-inbound-calls",
+    mode: "inbound-demo",
+    outbound_calls_enabled: false,
     version: DOUG_CONFIG.agentVersion,
-    worker: "Daisy — Doug's DPA assistant",
+    worker: "Daisy - DPA Help Center inbound receptionist",
     realtime_model: OPENAI_REALTIME_MODEL,
     voice: OPENAI_VOICE,
     monday_sync: MONDAY_SYNC_ENABLED ? "enabled" : "disabled",
@@ -5492,7 +6287,11 @@ app.get("/health", async (req, res) => {
     const database = await pool.query("SELECT NOW() AS database_time");
     res.json({
       status: "healthy",
-      service: "helux-ai-workforce",
+      service: "helux-ai-inbound-calls",
+      mode: "inbound-demo",
+      outbound_calls_enabled: false,
+      monday_connected: inboundMondayConnectionHealthy,
+      database_connected: true,
       version: DOUG_CONFIG.agentVersion,
       database: "connected",
       database_time: database.rows[0].database_time,
@@ -5504,6 +6303,7 @@ app.get("/health", async (req, res) => {
       monday: {
         requested: MONDAY_SYNC_REQUESTED,
         enabled: MONDAY_SYNC_ENABLED,
+        inbound_connected: inboundMondayConnectionHealthy,
         token_present: Boolean(MONDAY_API_TOKEN),
         board_id: MONDAY_BOARD_ID,
         subitem_board_id: MONDAY_SUBITEM_BOARD_ID,
@@ -5515,7 +6315,11 @@ app.get("/health", async (req, res) => {
   } catch (error) {
     res.status(503).json({
       status: "unhealthy",
-      service: "helux-ai-workforce",
+      service: "helux-ai-inbound-calls",
+      mode: "inbound-demo",
+      outbound_calls_enabled: false,
+      monday_connected: inboundMondayConnectionHealthy,
+      database_connected: false,
       database: "disconnected",
       error: error.message
     });
@@ -5527,38 +6331,33 @@ app.get(
   authenticateHelux,
   async (req, res, next) => {
     try {
-      if (!MONDAY_SYNC_ENABLED) {
+      if (!INBOUND_MONDAY_CONNECTED) {
         throw new HttpError(
           409,
-          "monday.com sync is disabled or not fully configured."
+          "Inbound monday.com is not fully configured."
         );
       }
 
-      const metadata = await loadMondayMetadata({ force: true });
+      const metadata = await loadInboundMondayMetadata(true);
       res.json({
         success: true,
+        connected: true,
         api_version: MONDAY_API_VERSION,
         main_board: {
-          id: metadata.main.id,
-          name: metadata.main.name,
-          groups: metadata.main.groups.map((group) => ({
+          id: metadata.id,
+          name: metadata.name,
+          groups: metadata.groups.map((group) => ({
             id: group.id,
             title: group.title
           })),
-          columns: metadata.main.columns.map((column) => ({
+          columns: metadata.columns.map((column) => ({
             id: column.id,
             title: column.title,
             type: column.type
           }))
         },
         subitem_board: {
-          id: metadata.subitems.id,
-          name: metadata.subitems.name,
-          columns: metadata.subitems.columns.map((column) => ({
-            id: column.id,
-            title: column.title,
-            type: column.type
-          }))
+          id: MONDAY_SUBITEM_BOARD_ID
         }
       });
     } catch (error) {
@@ -5638,6 +6437,9 @@ app.post(
   authenticateHelux,
   async (req, res, next) => {
     try {
+      if (!OUTBOUND_CALLS_ENABLED) {
+        throw new HttpError(409, "Outbound call initiation is disabled in the inbound service.");
+      }
       const incoming = req.body || {};
       const acceptedLeadFields = [
         "case_id",
@@ -5940,6 +6742,92 @@ app.get(
   }
 );
 
+app.post("/api/v1/twilio/inbound", async (req, res, next) => {
+  try {
+    const callerPhone = normalizePhone(req.body.From);
+    const calledNumber = normalizePhone(req.body.To) || cleanText(req.body.To, 50);
+    const twilioCallSid = cleanText(req.body.CallSid, 80);
+    const leadSource = cleanText(
+      req.body.lead_source || req.body.LeadSource || req.query.lead_source,
+      160
+    );
+    const campaign = cleanText(
+      req.body.campaign || req.body.Campaign || req.query.campaign,
+      160
+    );
+    if (!twilioCallSid) throw new HttpError(422, "CallSid is required.");
+
+    const requestKey = `inbound:${twilioCallSid}`;
+    let call = await getCallByRequestKey(requestKey);
+    if (!call) {
+      const callId = createPublicId("INBOUND");
+      const streamToken = createStreamToken();
+      const payload = {
+        direction: "inbound",
+        caller_phone: callerPhone,
+        called_number: calledNumber,
+        twilio_call_sid: twilioCallSid,
+        lead_source: leadSource,
+        campaign
+      };
+      const result = await pool.query(
+        `INSERT INTO ai_calls (
+          call_id, request_key, phone, status, sequence_status, stream_token,
+          twilio_call_sid, payload, direction, timezone, consent_status,
+          agent_version, prompt_version, tool_version, knowledge_version,
+          routing_version, started_at, answered_at
+        ) VALUES (
+          $1, $2, $3, 'answered', 'active', $4, $5, $6::jsonb,
+          'inbound', $7, 'unverified', $8, $9, $10, $11, $12, NOW(), NOW()
+        ) RETURNING *`,
+        [
+          callId,
+          requestKey,
+          callerPhone || `unknown:${twilioCallSid}`,
+          streamToken,
+          twilioCallSid,
+          JSON.stringify(payload),
+          DEFAULT_TIMEZONE,
+          DOUG_CONFIG.agentVersion,
+          DOUG_CONFIG.promptVersion,
+          DOUG_CONFIG.toolVersion,
+          DOUG_CONFIG.knowledgeVersion,
+          DOUG_CONFIG.routingVersion
+        ]
+      );
+      call = result.rows[0];
+      inboundLog("[TWILIO]", "inbound_call_started", {
+        call_id: call.call_id,
+        caller_phone: maskedPhoneLastFour(callerPhone),
+        twilio_call_sid: twilioCallSid
+      });
+      void ensureInboundMondayCaller(call);
+    }
+
+    const response = new twilio.twiml.VoiceResponse();
+    const connect = response.connect();
+    const stream = connect.stream({
+      url: `${websocketBaseUrl()}/api/v1/twilio/media`
+    });
+    const parameters = {
+      call_id: call.call_id,
+      stream_token: call.stream_token,
+      direction: "inbound",
+      caller_phone: callerPhone || "",
+      called_number: calledNumber || "",
+      twilio_call_sid: twilioCallSid,
+      lead_source: leadSource || "",
+      campaign: campaign || ""
+    };
+    for (const [name, value] of Object.entries(parameters)) {
+      stream.parameter({ name, value: String(value) });
+    }
+    res.type("text/xml").send(response.toString());
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/v1/twilio/voice", async (req, res, next) => {
   try {
     const callId = cleanText(req.query.call_id, 100);
@@ -5993,17 +6881,14 @@ app.post("/api/v1/twilio/sms-status", async (req, res, next) => {
         : "unknown");
     const failed = ["failed", "undelivered"].includes(status.toLowerCase());
 
-    console.log(
-      JSON.stringify({
-        event: "outbound_sms_status",
-        call_id: call.call_id,
-        message_type: messageType,
-        message_sid: messageSid,
-        message_status: status,
-        error_code: errorCode,
-        error_message: errorMessage
-      })
-    );
+    inboundLog("[TWILIO]", "sms_status", {
+      call_id: call.call_id,
+      message_type: messageType,
+      message_sid: messageSid,
+      message_status: status,
+      error_code: errorCode,
+      error_message: cleanText(errorMessage, 300)
+    });
 
     await mergeCallResult(call.call_id, {
       [`${messageType}_sms_status`]: status,
@@ -6191,7 +7076,7 @@ mediaServer.on("connection", (twilioSocket) => {
     return sendToOpenAI({
       type: "session.update",
       session: {
-        instructions: buildDouglasDaisyInstructions(call, sessionCallPhase)
+        instructions: buildDaisyInboundInstructions(call)
       }
     });
   }
@@ -6206,11 +7091,8 @@ mediaServer.on("connection", (twilioSocket) => {
   }
 
   function exactFinalClosingSpoken(value) {
-    const lead = call?.payload || {};
-    const customerName =
-      cleanText(lead.first_name || lead.customer_name || lead.name, 160) ||
-      "the customer";
-    const expected = `If there's nothing else, thank you for your time, ${customerName}. Have a great day.`;
+    const expected =
+      "Thank you for calling the DPA Help Center. Please feel free to hang up and disconnect the call.";
     return normalizeCustomerUtterance(value) === normalizeCustomerUtterance(expected);
   }
 
@@ -6801,18 +7683,21 @@ return true;
     let output;
     try {
       const refreshed = await getCallById(call.call_id);
-      output = await routeIntent({
-        toolName: name,
-        args,
-        call: refreshed || call,
-        execute: (activeCall, toolName, toolArgs) =>
-          executeDougTool(
-            activeCall,
-            toolName,
-            toolArgs,
-            sessionCallPhase
-          )
-      });
+      const activeCall = refreshed || call;
+      output = INBOUND_TOOL_NAMES.has(name)
+        ? await executeInboundTool(activeCall, name, args)
+        : await routeIntent({
+            toolName: name,
+            args,
+            call: activeCall,
+            execute: (routedCall, toolName, toolArgs) =>
+              executeDougTool(
+                routedCall,
+                toolName,
+                toolArgs,
+                sessionCallPhase
+              )
+          });
     } catch (error) {
       console.error(`Daisy tool ${name} failed for ${call.call_id}:`, error);
       output = {
@@ -6873,6 +7758,33 @@ return true;
         normal_completion_recorded_at: new Date().toISOString()
       });
       call = (await getCallById(call.call_id)) || call;
+      const followUpNeeded = Boolean(call.result?.inbound_follow_up);
+      const transferredToOutbound = call.result?.transferred_to_outbound === true;
+      try {
+        await saveInboundCallSummary({
+          call_id: call.call_id,
+          intent: call.intent || call.result?.inbound_intent,
+          outcome: call.outcome,
+          summary: call.summary,
+          next_action: call.next_action,
+          inbound_status: transferredToOutbound
+            ? "Transferred to Outbound"
+            : followUpNeeded
+              ? "Follow-Up Needed"
+              : "Closed",
+          follow_up_needed: followUpNeeded || transferredToOutbound ? "Yes" : "No",
+          group_id: transferredToOutbound
+            ? INBOUND_MONDAY.groups.transferredToOutbound
+            : followUpNeeded
+              ? INBOUND_MONDAY.groups.existingApplicantFollowUp
+              : INBOUND_MONDAY.groups.closed
+        });
+      } catch (error) {
+        inboundLog("[INBOUND]", "completion_summary_save_failed", {
+          call_id: call.call_id,
+          error: cleanText(error.message, 300)
+        });
+      }
     }
 
     if (
@@ -6893,22 +7805,8 @@ return true;
       }
     });
     if (terminalActionSucceeded) {
-      const lead = call.payload || {};
-      const customerName =
-        cleanText(
-          lead.first_name || lead.customer_name || lead.name,
-          160
-        ) || "the customer";
-      const callbackType = call.result?.callback_type;
-      const closingLead =
-  callbackType === "call_one_rescheduled"
-    ? `Perfect. I have us scheduled to speak again. Thank you for your time, ${customerName}. I'll speak with you then.`
-    : callbackType === "call_two_application_follow_up"
-      ? `Excellent. Thank you for your time, ${customerName}. I look forward to speaking with you then.`
-      : `Thank you for your time, ${customerName}.`;
-
-const finalClosing =
-  `${closingLead} If there's nothing else, please feel free to hang up and disconnect the call. Have a great day.`;
+      const finalClosing =
+        "Thank you for calling the DPA Help Center. Please feel free to hang up and disconnect the call.";
       requestAssistantResponse({
         queueIfBusy: true,
         allowTerminalClosing: true,
@@ -6939,7 +7837,7 @@ const finalClosing =
         model: OPENAI_REALTIME_MODEL,
         voice: OPENAI_VOICE,
         transcriptionModel: OPENAI_TRANSCRIPTION_MODEL,
-        instructions: buildDouglasDaisyInstructions(call, sessionCallPhase),
+        instructions: buildDaisyInboundInstructions(call),
         tools: REALTIME_TOOLS
       });
 
@@ -6973,22 +7871,16 @@ const finalClosing =
           return;
         }
 
-     if (!initialGreetingStarted) {
-  initialGreetingStarted = true;
-
-  const openingName = cleanText(call?.payload?.first_name, 80);
-  const internalCustomerName = cleanText(call?.payload?.customer_name, 160);
-  requestAssistantResponse({
-    response: {
-      output_modalities: ["audio"],
-      instructions: openingName
-        ? `Say exactly: "Hi, is ${openingName} available?" Say nothing else until they answer.`
-        : call?.payload?.call_type === "dpa_agent_notification"
-          ? `Say exactly: "Hi, is the DPA specialist assigned to ${internalCustomerName || "this application"} available?" Say nothing else until they answer.`
-          : "Say exactly: \"Hello, is this the person who recently reached out to DPA Help Center?\" Do not speak a name placeholder. Say nothing else until they answer."
-    }
-  });
-}
+        if (!initialGreetingStarted) {
+          initialGreetingStarted = true;
+          requestAssistantResponse({
+            response: {
+              output_modalities: ["audio"],
+              instructions:
+                'Say exactly: "Thank you for calling the DPA Help Center. This is Daisy. How can I help you today?" Say nothing else until the caller answers.'
+            }
+          });
+        }
 
         if (event.type === "response.created") {
           responseCreatePending = false;
@@ -7367,7 +8259,9 @@ const finalClosing =
         }));
 
         activeTwilioCallSid =
-          String(message?.start?.callSid || "").trim();
+          String(
+            message?.start?.callSid || parameters.twilio_call_sid || ""
+          ).trim();
         activeTwilioStreamSid =
           String(
             message?.start?.streamSid ||
@@ -7553,7 +8447,7 @@ app.use((error, req, res, next) => {
       : 500;
 
   if (statusCode >= 500) {
-    console.error("HELUX AI Workforce request failed:", error);
+    console.error("[INBOUND] Request failed:", error);
   }
 
   if (res.headersSent) {
@@ -7572,64 +8466,44 @@ async function start() {
     await initializeDatabase();
 
     server.listen(PORT, "0.0.0.0", () => {
-      console.log(`HELUX AI Workforce running on port ${PORT}`);
-      console.log(`Agent version: ${DOUG_CONFIG.agentVersion}`);
-      console.log(`Realtime model: ${OPENAI_REALTIME_MODEL}`);
-      console.log(`Voice: ${OPENAI_VOICE}`);
-      console.log(
-        `Consent enforcement: ${ENFORCE_CALL_CONSENT ? "enabled" : "disabled"}`
-      );
-      console.log(
-        `monday.com sync: ${MONDAY_SYNC_ENABLED ? "enabled" : "disabled"}`
-      );
-      console.log(
-        `monday.com inbound controls: ${
-          MONDAY_INBOUND_SYNC_ENABLED ? "enabled" : "disabled"
-        }`
-      );
-      if (MONDAY_SYNC_REQUESTED && !MONDAY_SYNC_ENABLED) {
-        console.warn(
-          "monday.com sync was requested but MONDAY_API_TOKEN, MONDAY_BOARD_ID, or MONDAY_SUBITEM_BOARD_ID is missing. The caller remains online."
-        );
-      }
+      inboundLog("[INBOUND]", "service_started", {
+        port: PORT,
+        service: "helux-ai-inbound-calls",
+        mode: "inbound-demo",
+        agent_version: DOUG_CONFIG.agentVersion,
+        realtime_model: OPENAI_REALTIME_MODEL,
+        voice: OPENAI_VOICE,
+        outbound_calls_enabled: false,
+        monday_configured: INBOUND_MONDAY_CONNECTED
+      });
     });
 
-    if (MONDAY_SYNC_ENABLED) {
-      void loadMondayMetadata({ force: true })
-        .then(async (metadata) => {
-          console.log(
-            `monday.com connected: ${metadata.main.name} (${metadata.main.id})`
-          );
-
-          if (MONDAY_INBOUND_SYNC_ENABLED) {
-            try {
-              const webhookIds = await ensureMondayInboundWebhooks();
-              console.log(
-                `monday.com inbound controls connected: ${webhookIds.join(", ")}`
-              );
-            } catch (error) {
-              console.error(
-                "monday.com inbound controls could not be registered. Outbound sync and calling remain online:",
-                error.message
-              );
-            }
-          }
+    if (INBOUND_MONDAY_CONNECTED) {
+      void loadInboundMondayMetadata(true)
+        .then((metadata) => {
+          inboundLog("[MONDAY]", "connected", {
+            board_id: metadata.id,
+            board_name: metadata.name
+          });
         })
         .catch((error) => {
-          console.error(
-            "monday.com metadata warm-up failed. The caller remains online:",
-            error.message
-          );
+          inboundLog("[MONDAY]", "metadata_warmup_failed", {
+            error: cleanText(error.message, 300)
+          });
         });
+    } else {
+      inboundLog("[MONDAY]", "not_configured", {
+        caller_remains_available: true
+      });
     }
   } catch (error) {
-    console.error("HELUX AI Workforce failed to start:", error);
+    console.error("[INBOUND] Service failed to start:", error);
     process.exit(1);
   }
 }
 
 async function shutdown() {
-  console.log("HELUX AI Workforce shutting down.");
+  console.log("[INBOUND] Service shutting down.");
 
   for (const timer of mondaySyncTimers.values()) clearTimeout(timer);
   mondaySyncTimers.clear();
