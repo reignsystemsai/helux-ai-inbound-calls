@@ -706,7 +706,15 @@ const INBOUND_MONDAY = Object.freeze({
     inboundStatus: "color_mm5eeeh",
     leadSource: "dropdown_mm5ee9cs",
     followUpNeeded: "color_mm5e49b8",
-    subitems: "subtasks_mm5et3dw"
+    subitems: "subtasks_mm5et3dw",
+
+    firstName: "text_mm5fx7z9",
+    lastName: "text_mm5fsrc0",
+    email: "email_mm5f7560",
+    phoneNumber: "phone_mm5fdqn5",
+    dateCalled: "date_mm5fcmq0",
+    summary: "text_mm5fsx2c",
+    callStatus: "dropdown_mm5fv4r9"
   })
 });
 const MONDAY_BOARD_ID = INBOUND_MONDAY.boards.inbound;
