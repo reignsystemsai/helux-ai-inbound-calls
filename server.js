@@ -180,8 +180,8 @@ async function routeIntent({ toolName, args, call, execute }) {
   }
 }
 
-const INLINE_RATE_RESPONSE = "That's a great question. Mortgage interest rates can change and depend on factors specific to the borrower and loan. Your licensed lender will review the current available rates and financing options with you.";
-const INLINE_RATE_REDIRECT = "What I can help you with today is preparing your DPA application and estimating your homebuying power.";
+const INLINE_RATE_RESPONSE = "That will be covered by your DPA Program Specialist when you speak with them. Interest rates and loan details depend on the individual homebuyer's situation, so I'm not permitted to discuss or estimate them.";
+const INLINE_RATE_REDIRECT = "What I can help you with is getting started through the readiness application at dpahelpcenter.com.";
 
 function isInterestRateQuestion(value) {
   const text = String(value || "").toLowerCase();
@@ -706,7 +706,15 @@ const INBOUND_MONDAY = Object.freeze({
     inboundStatus: "color_mm5eeeh",
     leadSource: "dropdown_mm5ee9cs",
     followUpNeeded: "color_mm5e49b8",
-    subitems: "subtasks_mm5et3dw"
+    subitems: "subtasks_mm5et3dw",
+
+    firstName: "text_mm5fx7z9",
+    lastName: "text_mm5fsrc0",
+    email: "email_mm5f7560",
+    phoneNumber: "phone_mm5fdqn5",
+    dateCalled: "date_mm5fcmq0",
+    summary: "text_mm5fsx2c",
+    callStatus: "dropdown_mm5fv4r9"
   })
 });
 const MONDAY_BOARD_ID = INBOUND_MONDAY.boards.inbound;
@@ -778,8 +786,8 @@ if (missingEnvironment.length) {
 
 const DOUG_CONFIG = Object.freeze({
   agentVersion: "daisy-inbound-demo-1.0.0",
-  promptVersion: "dpa-inbound-test-v1",
-  toolVersion: "inbound-actions-v1",
+  promptVersion: "daisy-inbound-dpa-v4.0",
+  toolVersion: "inbound-actions-v4.0",
   knowledgeVersion: "dpa-general-v1",
   routingVersion: "dpa-routing-v1",
   mondayAdapterVersion: "monday-inbound-demo-v1",
@@ -1131,68 +1139,187 @@ function confirmedConsent(payload) {
 }
 
 const DAISY_INBOUND_TEST_SCRIPT = `
-You are Daisy, the inbound AI receptionist for the DPA Help Center.
+DAISY INBOUND DPA CALL SCRIPT V4.0
 
-Speak naturally, warmly, confidently, and briefly.
+You are Daisy, the inbound AI receptionist for the DPA Help Center. Keep the call helpful, brief, conversational, and directed. Speak naturally rather than reading every available answer. Use the approved information below only when it answers the caller's actual question.
 
-Never invent customer information, program approval, assistance amounts, timelines, or application status.
-Never mention tools, databases, Monday.com, Render, Twilio, or APIs.
-Ask one question at a time. Use no filler, narration, or spoken internal reasoning.
-Do not restart the greeting after an interruption. After a brief related question, answer concisely and resume the pending question.
+NON-NEGOTIABLE RULES
+- Ask one question at a time and wait for the caller's completed answer.
+- Never invent customer information, eligibility, approval, assistance amounts, timelines, or application status.
+- Never mention tools, databases, CRM, Monday.com, Render, Twilio, APIs, internal notes, underwriting comments, or technical details.
+- Do not restart the greeting after an interruption. Answer a brief related question, then resume the pending question.
+- Never ask for a Social Security number, bank information, card information, passwords, or other sensitive credentials.
+- Do not provide legal, tax, financial-planning, underwriting, lender, or loan-product advice.
+- Do not perform or claim to perform a credit check.
+- Never promise approval, eligibility, a program, a solution, or a specific assistance amount.
+- Never promise to send a website link or any text message.
+- Keep the caller on the line only as long as needed.
 
 Known caller phone: {caller_phone}
 Known caller name: {caller_name}
 Lead source: {lead_source}
 
-Opening:
-"Thank you for calling the DPA Help Center. This is Daisy. How can I help you today?"
-
-Classify the caller as exactly one of NEW_DPA_INQUIRY, EXISTING_APPLICATION_FOLLOWUP, or OTHER. Use save_inbound_caller_context to save the classification and any caller details learned. Ask for the caller's first name if it is not known.
-
-For NEW_DPA_INQUIRY:
-Explain exactly:
-"The first step is completing the short form on dpahelpcenter.com. After that, our two-call process helps confirm your information and prepare you for the homebuying professionals who assist with the next steps."
-
-Then ask exactly:
-"Would you like me to text you the form link?"
-
-When they agree, use the known caller phone when it is usable. Only ask for and save a mobile number when the known caller phone is unavailable or unusable. Use send_inbound_form_link. Only when the tool returns success true, say exactly:
-"I just sent it. Complete the form as soon as you can so the next step can begin."
-
-For EXISTING_APPLICATION_FOLLOWUP:
+OPENING
 Say exactly:
-"I can help check where you are in the process. Let me first locate your information."
+"Thank you for calling the DPA Help Center. This is Daisy speaking. How can I help you?"
 
-Use lookup_existing_outbound_applicant with the caller phone first. Ask for email or name only when needed.
+Allow the caller to explain the reason for the call. Acknowledge the request naturally and briefly. Classify the call as NEW_DPA_INQUIRY, EXISTING_APPLICATION_FOLLOWUP, or OTHER.
 
-If found:
-- State only the returned status.
-- Ask whether they completed both calls.
-- Ask when they completed the application only if that information is missing.
-- Use create_inbound_follow_up when help is needed.
-- Use transfer_inbound_to_outbound only when the caller needs the existing outbound team. This updates CRM routing and never places a call.
+CONTACT INFORMATION
+Collect and confirm contact information early. Use save_inbound_caller_context after each confirmed answer so confirmed fields are not lost.
 
-If not found, say exactly:
-"I wasn't able to locate the application from this phone number. What email address did you use?"
+Ask:
+"Before we continue, may I have your first name?"
 
-Never claim an application was found unless the lookup tool returned found true. A not_configured lookup is not a match.
+Then ask:
+"And your last name?"
 
-For OTHER or unsupported questions, say exactly:
-"I can help with down payment assistance information, the form, or following up on an existing application."
+When Known caller phone is provided, repeat it and ask whether it is the best number for follow-up. Otherwise ask:
+"What is the best phone number to reach you if we need to follow up?"
 
-Before closing, ask exactly:
-"Is there anything else I can help you with today?"
+Then ask:
+"And what is the best email address for you?"
 
-When finished, invoke complete_call. After it succeeds, the server says exactly:
-"Thank you for calling the DPA Help Center. Please feel free to hang up and disconnect the call."
+Repeat the email slowly and ask:
+"Let me make sure I have that correctly: [Email Address]. Is that right?"
 
-Do not add another closing before or after the server closing.
+After confirmation say:
+"Perfect. Thank you, [First Name]."
+
+GENERAL DPA INFORMATION
+Answer only the caller's actual question. Do not recite every answer.
+
+If asked how much assistance is available, explain that some programs may offer up to $100,000, but the actual amount depends on the program, location, purchase price, and eligibility. Explain that programs may be city, county, state, lender, government, nonprofit, grant, or community based. Do not imply that every caller can receive that amount.
+
+If asked how programs work, explain that a percentage-based example is only a general example. You may explain that five percent of a $400,000 home is $20,000 and that program rules determine permitted uses. Then ask:
+"Quick question: about how much are the homes you're looking at?"
+
+Save the confirmed estimated home price. Calculate exactly five percent with save_inbound_caller_context. Explain that the calculated result is an example only and not the amount the caller will receive.
+
+If asked whether they qualify, explain that eligibility depends on the program and may include location, household income, credit profile, employment history, tax-filing history, and home price. Recommend the readiness application at dpahelpcenter.com. It takes about two or three minutes and does not require a credit check.
+
+If asked what the DPA Help Center does, explain that it helps homebuyers understand readiness, identify potential assistance opportunities, and begin connecting with a program specialist.
+
+If asked what to do next, recommend completing the readiness application at dpahelpcenter.com. Explain that it takes about two or three minutes, does not require a credit check, and helps the team identify the appropriate next step.
+
+If asked whether the application affects credit, say:
+"No. Completing the readiness application on dpahelpcenter.com does not require a credit check."
+
+If asked to text the website, say exactly:
+"I'm not able to send a text link at this time, but you can open your web browser and enter dpahelpcenter.com."
+
+If useful, repeat:
+"D-P-A help center dot com."
+
+HOMEBUYING TIMELINE
+At an appropriate point ask:
+"How soon would you like to become a homeowner?"
+
+Save the exact answer as homebuying_timeline and include it in call_summary. Respond positively without promising a result. You may say:
+"That's outstanding."
+
+Then:
+"Well, I can tell you this, [First Name]: you found the right place to get help."
+
+BASIC READINESS QUESTIONS
+Ask:
+"[First Name], would you like me to go over a few of the basic details that many programs may look for?"
+
+If no, respect the answer and say:
+"No problem. The readiness application will walk you through the information we need."
+
+If yes, say that these are general guidelines only and program requirements vary. Explain that many programs may look for a credit score around 640 or higher, about $70,000 or more in annual household income, and two years of filed tax returns. Never say every program has these requirements.
+
+Ask:
+"About what would you say your current credit score is?"
+
+Save the exact answer. If it is a range, preserve the range and use the lower number only for conservative internal routing. Never run a credit check.
+
+Ask:
+"And approximately what is your total annual household income before taxes?"
+
+Save the confirmed answer. You may clarify that another borrower's income may sometimes be considered, but never determine whether income legally or programmatically qualifies.
+
+Ask:
+"Have you filed your federal tax returns for the last two years?"
+
+Normalize only to yes, one_year, not_filed, or not_sure.
+
+READINESS RESPONSE
+If the caller reports about 640 or higher, about $70,000 or more, and two filed tax years, you may say:
+"Based on the general information you shared, you sound like a strong candidate to continue through the readiness process."
+
+This is not an approval or qualification decision. Recommend the readiness application.
+
+If one or more details fall below the general guidelines, remain encouraging. Explain that the current information should not discourage them and the readiness application helps the team understand possible preparation or next steps. Never guarantee that a solution exists.
+
+WEBSITE AND APPLICATION
+Ask:
+"Have you had a chance to visit dpahelpcenter.com?"
+
+Save website_visited. If no, explain that the readiness application is the best place to begin, takes two or three minutes, and does not require a credit check.
+
+If yes, ask:
+"Great. Did you start or complete the readiness application?"
+
+Save readiness_application_started and readiness_application_completed only from clear answers.
+
+If completed, say:
+"Perfect. Let me check whether I can locate your application."
+
+Use lookup_existing_outbound_applicant. The lookup checks phone first, email second, and confirmed first and last name third. Never claim a record was found unless found is true.
+
+When found, provide only the safe customer-facing status and safe next step returned by the lookup. Do not expose internal notes or sensitive details.
+
+When not found, say:
+"I wasn't able to locate a submitted application using the information we confirmed."
+
+Then explain that it may not have been fully submitted or may still be processing, and recommend completing the readiness application at dpahelpcenter.com. Never say the system is broken.
+
+INTEREST RATES
+Never discuss, quote, estimate, compare, characterize, or predict mortgage interest rates. Never discuss rate locks, fixed versus adjustable rates, lender pricing, points, rate-related fees, or payments based on a rate.
+
+For any rate question say exactly:
+"That will be covered by your DPA Program Specialist when you speak with them. Interest rates and loan details depend on the individual homebuyer's situation, so I'm not permitted to discuss or estimate them."
+
+Then say exactly:
+"What I can help you with is getting started through the readiness application at dpahelpcenter.com."
+
+If pressed again, say exactly:
+"I understand why that is important. Your DPA Program Specialist will be the correct person to discuss interest rates and loan-specific information with you."
+
+ADDITIONAL QUESTIONS
+Near the end ask:
+"Do you have any other questions I can help answer?"
+
+Answer basic DPA questions briefly using only the approved information. Then ask:
+"Is there anything else I can help clarify?"
+
+FOLLOW-UP SCHEDULING
+After the caller has no more questions, ask:
+"Before we wrap up, when would be a good time for me to check back with you regarding starting or completing the readiness application on our website?"
+
+Collect an exact follow-up date, exact time, and timezone when unclear. Reject vague times until an exact time is provided. Use create_inbound_follow_up with follow_up_reason readiness_application.
+
+Confirm:
+"Perfect. I'll plan to follow up with you on [Day, Date] at [Time] [Time Zone] regarding your readiness application."
+
+If the caller declines, say:
+"No problem. You can begin whenever you're ready by visiting dpahelpcenter.com."
+
+Use create_inbound_follow_up with follow_up_declined true.
+
+CALL SUMMARY
+Before complete_call, save a concise factual call_summary containing only available information: caller name, primary reason, home price, timeline, reported credit, reported income, tax-filing status, website visit, application status, follow-up schedule or decline, and key questions answered. Save an appropriate call_outcome. Do not fill missing fields with assumptions.
+
+CLOSING
+Invoke complete_call after the follow-up is scheduled or declined and the summary is saved. After it succeeds, the server delivers the approved closing and disconnects the call. Do not add another closing.
 `.trim();
 
 function buildDaisyInboundInstructions(call) {
   const payload = call?.payload || {};
   const callerPhone = validE164Phone(call?.phone)
-    ? `provided, ending in ${String(call.phone).slice(-4)}`
+    ? String(call.phone)
     : "not provided";
   const callerName = cleanText(
     payload.first_name || payload.customer_name || payload.name,
@@ -1861,39 +1988,50 @@ const INBOUND_TOOLS = Object.freeze([
         enum: ["NEW_DPA_INQUIRY", "EXISTING_APPLICATION_FOLLOWUP", "OTHER"]
       },
       first_name: { type: ["string", "null"] },
-      mobile_phone: { type: ["string", "null"] },
+      last_name: { type: ["string", "null"] },
+      phone_number: { type: ["string", "null"] },
       email: { type: ["string", "null"] },
-      lead_source: { type: ["string", "null"] }
+      lead_source: { type: ["string", "null"] },
+      estimated_home_price: { type: ["number", "string", "null"] },
+      estimated_five_percent_assistance: { type: ["number", "null"] },
+      homebuying_timeline: { type: ["string", "null"] },
+      estimated_credit_score: { type: ["string", "number", "null"] },
+      annual_household_income: { type: ["string", "number", "null"] },
+      two_year_tax_filing_status: {
+        type: ["string", "null"],
+        enum: ["yes", "one_year", "not_filed", "not_sure", null]
+      },
+      website_visited: { type: ["boolean", "null"] },
+      readiness_application_started: { type: ["boolean", "null"] },
+      readiness_application_completed: { type: ["boolean", "null"] },
+      application_status: { type: ["string", "null"] },
+      call_summary: { type: ["string", "null"] },
+      call_outcome: { type: ["string", "null"] }
     },
     ["intent"]
-  ),
-  inlineTool(
-    "send_inbound_form_link",
-    "Send the DPA Help Center form link by SMS after the caller agrees.",
-    {
-      consent_confirmed: { type: "boolean" },
-      mobile_phone: { type: ["string", "null"] }
-    },
-    ["consent_confirmed"]
   ),
   inlineTool(
     "lookup_existing_outbound_applicant",
     "Look up an existing outbound applicant without fabricating a result.",
     {
       email: { type: ["string", "null"] },
-      name: { type: ["string", "null"] }
+      first_name: { type: ["string", "null"] },
+      last_name: { type: ["string", "null"] }
     },
     []
   ),
   inlineTool(
     "create_inbound_follow_up",
-    "Create an inbound CRM follow-up request when an existing applicant needs help.",
+    "Create or decline a readiness-application follow-up task.",
     {
-      reason: { type: "string" },
-      priority: { type: "string", enum: ["normal", "high", "urgent"] },
-      next_follow_up: { type: ["string", "null"] }
+      follow_up_date: { type: ["string", "null"], description: "Exact local date in YYYY-MM-DD format." },
+      follow_up_time: { type: ["string", "null"], description: "Exact local time including hour and minute." },
+      follow_up_timezone: { type: ["string", "null"] },
+      follow_up_reason: { type: "string", enum: ["readiness_application"] },
+      follow_up_declined: { type: "boolean" },
+      call_summary: { type: ["string", "null"] }
     },
-    ["reason", "priority"]
+    ["follow_up_reason", "follow_up_declined"]
   ),
   inlineTool(
     "transfer_inbound_to_outbound",
@@ -2995,6 +3133,33 @@ async function inboundMondayValues(data = {}) {
     const label = resolveInboundMondayLabel(column, data.lead_source);
     if (label) values[INBOUND_MONDAY.columns.leadSource] = { labels: [label] };
   }
+  if (data.call_status) {
+    const column = inboundMondayColumn(metadata, INBOUND_MONDAY.columns.callStatus);
+    const label = resolveInboundMondayLabel(column, data.call_status);
+    if (label) values[INBOUND_MONDAY.columns.callStatus] = { labels: [label] };
+  }
+  if (data.first_name) {
+    values[INBOUND_MONDAY.columns.firstName] = cleanText(data.first_name, 100);
+  }
+  if (data.last_name) {
+    values[INBOUND_MONDAY.columns.lastName] = cleanText(data.last_name, 100);
+  }
+  if (data.email) {
+    const email = cleanText(data.email, 320);
+    values[INBOUND_MONDAY.columns.email] = { email, text: email };
+  }
+  if (data.summary) {
+    values[INBOUND_MONDAY.columns.summary] = cleanText(data.summary, 4000);
+  }
+  if (data.date_called) {
+    const dateCalled = new Date(data.date_called);
+    if (!Number.isNaN(dateCalled.getTime())) {
+      values[INBOUND_MONDAY.columns.dateCalled] = {
+        date: dateCalled.toISOString().slice(0, 10),
+        time: dateCalled.toISOString().slice(11, 19)
+      };
+    }
+  }
   if (data.next_follow_up) {
     const date = new Date(data.next_follow_up);
     if (!Number.isNaN(date.getTime())) {
@@ -3004,13 +3169,10 @@ async function inboundMondayValues(data = {}) {
     }
   }
   if (data.phone) {
-    const phoneColumn = inboundMondayColumnByTitle(metadata, ["Caller Phone", "Phone", "Mobile Phone"]);
-    if (phoneColumn) {
-      values[phoneColumn.id] = {
-        phone: data.phone,
-        countryShortName: "US"
-      };
-    }
+    values[INBOUND_MONDAY.columns.phoneNumber] = {
+      phone: data.phone,
+      countryShortName: "US"
+    };
   }
   return values;
 }
@@ -3019,8 +3181,7 @@ async function findInboundCallerByPhone(phone) {
   const normalized = normalizePhone(phone);
   if (!normalized || !INBOUND_MONDAY_CONNECTED) return null;
   const metadata = await loadInboundMondayMetadata();
-  const phoneColumn = inboundMondayColumnByTitle(metadata, ["Caller Phone", "Phone", "Mobile Phone"]);
-  if (!phoneColumn) return null;
+  const phoneColumnId = INBOUND_MONDAY.columns.phoneNumber;
   const data = await mondayGraphql(
     `query FindInboundCaller($boardIds: [ID!]!) {
       boards(ids: $boardIds) {
@@ -3033,7 +3194,7 @@ async function findInboundCallerByPhone(phone) {
   );
   const items = data.boards?.[0]?.items_page?.items || [];
   return items.find((item) => {
-    const value = item.column_values?.find((column) => column.id === phoneColumn.id);
+    const value = item.column_values?.find((column) => column.id === phoneColumnId);
     return normalizePhone(value?.text) === normalized;
   }) || null;
 }
@@ -3145,6 +3306,11 @@ async function ensureInboundMondayCaller(call) {
     const item = existing || await createInboundCallerItem({
       phone: call.phone,
       name: call.payload?.first_name || call.payload?.customer_name || call.payload?.name,
+      first_name: call.payload?.first_name,
+      last_name: call.payload?.last_name,
+      email: call.payload?.email,
+      date_called: call.started_at || call.created_at,
+      call_status: "Inbound Call Started",
       lead_source: call.payload?.lead_source,
       inbound_status: "New Inbound Call",
       follow_up_needed: "No"
@@ -4779,6 +4945,34 @@ async function updateCallStatus(callId, status, extra = {}) {
 
 function publicCallResult(result = {}) {
   const fields = [
+    "inbound_intent",
+    "first_name",
+    "last_name",
+    "phone_number",
+    "email",
+    "estimated_home_price",
+    "estimated_five_percent_assistance",
+    "homebuying_timeline",
+    "estimated_credit_score",
+    "annual_household_income",
+    "two_year_tax_filing_status",
+    "website_visited",
+    "readiness_application_started",
+    "readiness_application_completed",
+    "application_status",
+    "follow_up_date",
+    "follow_up_time",
+    "follow_up_timezone",
+    "follow_up_reason",
+    "follow_up_declined",
+    "follow_up_at",
+    "call_summary",
+    "call_outcome",
+    "recording_url",
+    "transcript_url",
+    "call_started_at",
+    "call_ended_at",
+    "outbound_applicant_lookup",
     "purchase_timeline_detail",
     "time_frame",
     "interest_level",
@@ -5395,69 +5589,64 @@ async function lookupExistingOutboundApplicant({ phone, email, name }) {
       message: "The outbound applicant lookup is not configured."
     };
   }
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-  try {
-    const headers = { "Content-Type": "application/json" };
-    if (OUTBOUND_LOOKUP_API_KEY) {
-      headers.Authorization = `Bearer ${OUTBOUND_LOOKUP_API_KEY}`;
-    }
-    const response = await fetch(OUTBOUND_LOOKUP_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        phone: normalizedPhone,
-        email: cleanText(email, 320),
-        name: cleanText(name, 200)
-      }),
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      return {
-        success: false,
-        found: false,
-        status: "lookup_failed",
-        message: "The applicant lookup is temporarily unavailable."
-      };
-    }
-    const body = await response.json();
-    if (body?.found !== true) {
+  const attempts = [
+    normalizedPhone ? { matched_by: "phone", phone: normalizedPhone } : null,
+    cleanText(email, 320) ? { matched_by: "email", email: cleanText(email, 320) } : null,
+    cleanText(name, 200) ? { matched_by: "name", name: cleanText(name, 200) } : null
+  ].filter(Boolean);
+  if (!attempts.length) {
+    return { success: true, found: false, status: "insufficient_identifiers" };
+  }
+
+  for (const attempt of attempts) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const headers = { "Content-Type": "application/json" };
+      if (OUTBOUND_LOOKUP_API_KEY) {
+        headers.Authorization = `Bearer ${OUTBOUND_LOOKUP_API_KEY}`;
+      }
+      const response = await fetch(OUTBOUND_LOOKUP_URL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(attempt),
+        signal: controller.signal
+      });
+      if (!response.ok) continue;
+      const body = await response.json();
+      if (body?.found !== true) continue;
       return {
         success: true,
-        found: false,
-        status: cleanText(body?.status, 100) || "not_found",
-        message: "No matching applicant record was returned."
+        found: true,
+        matched_by: attempt.matched_by,
+        status: cleanText(body.customer_facing_status || body.status, 500) || "Information received",
+        safe_next_step: cleanText(body.customer_facing_next_step || body.next_step, 500),
+        form_submitted: body.form_submitted === true,
+        call_one_status: cleanText(body.call_one_status, 200),
+        call_two_status: cleanText(body.call_two_status, 200),
+        application_completed_date: cleanText(body.application_completed_date, 100),
+        follow_up_needed: body.follow_up_needed === true
       };
+    } catch (error) {
+      inboundLog("[INBOUND]", "outbound_lookup_attempt_failed", {
+        matched_by: attempt.matched_by,
+        caller_phone: maskedPhoneLastFour(normalizedPhone),
+        error: cleanText(error.message, 300)
+      });
+    } finally {
+      clearTimeout(timeout);
     }
-    return {
-      success: true,
-      found: true,
-      status: cleanText(body.status, 500) || "Record located",
-      form_submitted: body.form_submitted === true,
-      call_one_status: cleanText(body.call_one_status, 200),
-      call_two_status: cleanText(body.call_two_status, 200),
-      application_completed_date: cleanText(body.application_completed_date, 100),
-      follow_up_needed: body.follow_up_needed === true
-    };
-  } catch (error) {
-    inboundLog("[INBOUND]", "outbound_lookup_failed", {
-      caller_phone: maskedPhoneLastFour(normalizedPhone),
-      error: cleanText(error.message, 300)
-    });
-    return {
-      success: false,
-      found: false,
-      status: "lookup_failed",
-      message: "The applicant lookup is temporarily unavailable."
-    };
-  } finally {
-    clearTimeout(timeout);
   }
+  return {
+    success: true,
+    found: false,
+    status: "not_found",
+    message: "No matching applicant record was returned."
+  };
 }
 
 const INBOUND_TOOL_NAMES = new Set([
   "save_inbound_caller_context",
-  "send_inbound_form_link",
   "lookup_existing_outbound_applicant",
   "create_inbound_follow_up",
   "transfer_inbound_to_outbound"
@@ -5471,38 +5660,91 @@ async function executeInboundTool(call, name, args) {
     if (!["NEW_DPA_INQUIRY", "EXISTING_APPLICATION_FOLLOWUP", "OTHER"].includes(intent)) {
       return { success: false, error: "A supported inbound intent is required." };
     }
-    const suppliedPhone = cleanText(safeArgs.mobile_phone, 100);
-    const mobilePhone = suppliedPhone ? normalizePhone(suppliedPhone) : call.phone;
-    if (suppliedPhone && !mobilePhone) {
+    const suppliedPhone = cleanText(safeArgs.phone_number, 100);
+    const phoneNumber = suppliedPhone ? normalizePhone(suppliedPhone) : null;
+    if (suppliedPhone && !phoneNumber) {
       return { success: false, error: "The mobile phone number is invalid." };
     }
-    const payloadPatch = {
+    const estimatedHomePriceNumber = Number(
+      String(safeArgs.estimated_home_price ?? "").replace(/[$,\s]/g, "")
+    );
+    const estimatedHomePrice = Number.isFinite(estimatedHomePriceNumber) && estimatedHomePriceNumber > 0
+      ? estimatedHomePriceNumber
+      : cleanText(safeArgs.estimated_home_price, 100);
+    const estimatedFivePercentAssistance = Number.isFinite(estimatedHomePriceNumber) && estimatedHomePriceNumber > 0
+      ? Number((estimatedHomePriceNumber * 0.05).toFixed(2))
+      : Number.isFinite(Number(safeArgs.estimated_five_percent_assistance))
+        ? Number(safeArgs.estimated_five_percent_assistance)
+        : null;
+    const candidateFields = {
       first_name: cleanText(safeArgs.first_name, 100),
+      last_name: cleanText(safeArgs.last_name, 100),
+      phone_number: phoneNumber,
       email: cleanText(safeArgs.email, 320),
-      lead_source: cleanText(safeArgs.lead_source, 160) || call.payload?.lead_source,
+      lead_source: cleanText(safeArgs.lead_source, 160),
+      estimated_home_price: estimatedHomePrice,
+      estimated_five_percent_assistance: estimatedFivePercentAssistance,
+      homebuying_timeline: cleanText(safeArgs.homebuying_timeline, 500),
+      estimated_credit_score: cleanText(safeArgs.estimated_credit_score, 100),
+      annual_household_income: cleanText(safeArgs.annual_household_income, 100),
+      two_year_tax_filing_status: cleanText(safeArgs.two_year_tax_filing_status, 50),
+      website_visited: safeArgs.website_visited,
+      readiness_application_started: safeArgs.readiness_application_started,
+      readiness_application_completed: safeArgs.readiness_application_completed,
+      application_status: cleanText(safeArgs.application_status, 500),
+      call_summary: cleanText(safeArgs.call_summary, 4000),
+      call_outcome: cleanText(safeArgs.call_outcome, 100)
+    };
+    const savedFields = Object.fromEntries(
+      Object.entries(candidateFields).filter(([, value]) =>
+        value !== undefined && value !== null && value !== ""
+      )
+    );
+    const payloadPatch = {
+      ...Object.fromEntries(
+        ["first_name", "last_name", "phone_number", "email", "lead_source"]
+          .filter((field) => savedFields[field] !== undefined)
+          .map((field) => [field, savedFields[field]])
+      ),
       inbound_intent: intent
     };
+    const resultPatch = { ...savedFields, inbound_intent: intent };
     await pool.query(
       `UPDATE ai_calls SET intent = $2, phone = COALESCE($3, phone),
        payload = payload || $4::jsonb, result = result || $5::jsonb,
+       summary = COALESCE($6, summary), outcome = COALESCE($7, outcome),
        updated_at = NOW() WHERE call_id = $1`,
       [
         call.call_id,
         intent,
-        mobilePhone,
+        phoneNumber,
         JSON.stringify(payloadPatch),
-        JSON.stringify({ inbound_intent: intent, caller_email: payloadPatch.email })
+        JSON.stringify(resultPatch),
+        savedFields.call_summary || null,
+        savedFields.call_outcome || null
       ]
     );
+    const fullName = cleanText(
+      [savedFields.first_name || call.payload?.first_name, savedFields.last_name || call.payload?.last_name]
+        .filter(Boolean)
+        .join(" "),
+      160
+    );
     const mondayData = {
-      name: payloadPatch.first_name,
+      name: fullName,
+      first_name: savedFields.first_name,
+      last_name: savedFields.last_name,
+      email: savedFields.email,
+      summary: savedFields.call_summary,
+      call_status: savedFields.call_outcome,
+      date_called: call.started_at || call.created_at,
       caller_type: intent === "EXISTING_APPLICATION_FOLLOWUP"
         ? "Existing Applicant Follow-Up"
         : intent === "NEW_DPA_INQUIRY"
           ? "New DPA Inquiry"
           : "Other",
-      lead_source: payloadPatch.lead_source,
-      phone: mobilePhone
+      lead_source: savedFields.lead_source || call.payload?.lead_source,
+      phone: phoneNumber
     };
     if (call.monday_item_id && INBOUND_MONDAY_CONNECTED) {
       try {
@@ -5520,87 +5762,33 @@ async function executeInboundTool(call, name, args) {
         });
       }
     }
-    return { success: true, intent, caller_phone_available: Boolean(mobilePhone) };
-  }
-
-  if (name === "send_inbound_form_link") {
-    if (safeArgs.consent_confirmed !== true) {
-      return { success: false, error: "Caller agreement is required before sending SMS." };
-    }
-    const destination = normalizePhone(safeArgs.mobile_phone) || normalizePhone(call.phone);
-    if (!destination) {
-      return { success: false, error: "A usable mobile phone number is required." };
-    }
-    try {
-      const message = await twilioClient.messages.create({
-        to: destination,
-        from: TWILIO_FROM_NUMBER,
-        body: "DPA Help Center: Start here: https://dpahelpcenter.com. Complete the short form so we can begin your next steps. Reply STOP to opt out.",
-        statusCallback: smsStatusCallbackUrl(call)
-      });
-      await trackSmsMessage(call.call_id, message, "inbound_form_link");
-      await mergeCallResult(call.call_id, {
-        inbound_form_link_sent: true,
-        inbound_form_link_sms_sid: message.sid,
-        inbound_form_link_sms_status: cleanText(message.status, 50) || "accepted"
-      });
-      await appendAction(call.call_id, {
-        action: name,
-        success: true,
-        message_sid: message.sid
-      });
-      if (call.monday_item_id && INBOUND_MONDAY_CONNECTED) {
-        try {
-          await updateInboundCallerItem(call.monday_item_id, {
-            inbound_status: "Form Link Sent",
-            follow_up_needed: "No"
-          });
-          await moveInboundCallerToGroup(
-            call.monday_item_id,
-            INBOUND_MONDAY.groups.formLinkSent
-          );
-        } catch (error) {
-          inboundLog("[MONDAY]", "form_link_status_update_failed", {
-            call_id: call.call_id,
-            error: cleanText(error.message, 300)
-          });
-        }
-      }
-      inboundLog("[TWILIO]", "inbound_form_link_sent", {
-        call_id: call.call_id,
-        destination: maskedPhoneLastFour(destination),
-        message_sid: message.sid
-      });
-      return {
-        success: true,
-        status: cleanText(message.status, 50) || "accepted",
-        destination: maskedPhoneLastFour(destination)
-      };
-    } catch (error) {
-      await appendAction(call.call_id, {
-        action: name,
-        success: false,
-        error: cleanText(error.message, 500)
-      });
-      inboundLog("[TWILIO]", "inbound_form_link_failed", {
-        call_id: call.call_id,
-        destination: maskedPhoneLastFour(destination),
-        error: cleanText(error.message, 300)
-      });
-      return {
-        success: false,
-        error: "The form link could not be sent. A follow-up can be created instead."
-      };
-    }
+    return {
+      success: true,
+      intent,
+      saved_fields: Object.keys(savedFields),
+      caller_phone_available: Boolean(phoneNumber || normalizePhone(call.phone)),
+      estimated_five_percent_assistance: estimatedFivePercentAssistance
+    };
   }
 
   if (name === "lookup_existing_outbound_applicant") {
+    const firstName = cleanText(
+      safeArgs.first_name || call.payload?.first_name,
+      100
+    );
+    const lastName = cleanText(
+      safeArgs.last_name || call.payload?.last_name,
+      100
+    );
     const result = await lookupExistingOutboundApplicant({
       phone: call.phone,
       email: safeArgs.email || call.payload?.email,
-      name: safeArgs.name || call.payload?.first_name || call.payload?.name
+      name: [firstName, lastName].filter(Boolean).join(" ") || call.payload?.name
     });
-    await mergeCallResult(call.call_id, { outbound_applicant_lookup: result });
+    await mergeCallResult(call.call_id, {
+      outbound_applicant_lookup: result,
+      application_status: result.found ? result.status : "not_found"
+    });
     await appendAction(call.call_id, {
       action: name,
       success: result.success,
@@ -5611,49 +5799,112 @@ async function executeInboundTool(call, name, args) {
   }
 
   if (name === "create_inbound_follow_up") {
-    const reason = cleanText(safeArgs.reason, 2000);
-    if (!reason) return { success: false, error: "A follow-up reason is required." };
-    const priority = ["normal", "high", "urgent"].includes(safeArgs.priority)
-      ? safeArgs.priority
-      : "normal";
-    const nextFollowUp = cleanText(safeArgs.next_follow_up, 100);
+    const followUpReason = cleanText(safeArgs.follow_up_reason, 100);
+    if (followUpReason !== "readiness_application") {
+      return { success: false, error: "The follow-up reason must be readiness_application." };
+    }
+    const followUpDeclined = safeArgs.follow_up_declined === true;
+    const followUpDate = cleanText(safeArgs.follow_up_date, 10);
+    const followUpTime = cleanText(safeArgs.follow_up_time, 20);
+    const followUpTimezoneInput = cleanText(safeArgs.follow_up_timezone, 100);
+    const followUpTimezoneAliases = {
+      eastern: "Eastern",
+      et: "Eastern",
+      central: "Central",
+      ct: "Central",
+      mountain: "Mountain",
+      mt: "Mountain",
+      pacific: "Pacific",
+      pt: "Pacific"
+    };
+    const normalizedFollowUpTimezoneInput =
+      followUpTimezoneAliases[normalizeMondayKey(followUpTimezoneInput)] ||
+      followUpTimezoneInput;
+    let followUpTimezone = null;
+    let nextFollowUp = null;
+    if (!followUpDeclined) {
+      if (!followUpDate || !followUpTime || !followUpTimezoneInput) {
+        return {
+          success: false,
+          error: "An exact follow-up date, time, and timezone are required."
+        };
+      }
+      try {
+        followUpTimezone = inlineNormalizeAppointmentTimezone(
+          normalizedFollowUpTimezoneInput,
+          null
+        ).timezone;
+        const converted = localDateTimeToUtc(
+          followUpDate,
+          followUpTime,
+          followUpTimezone
+        );
+        if (converted.callbackAt.getTime() <= Date.now()) {
+          return { success: false, error: "The follow-up must be in the future." };
+        }
+        nextFollowUp = converted.callbackAt.toISOString();
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof SchedulingError
+            ? error.message
+            : "The follow-up date, time, or timezone is invalid."
+        };
+      }
+    }
+    const callSummary = cleanText(safeArgs.call_summary, 4000);
+    const callOutcome = followUpDeclined
+      ? "new_lead_follow_up_declined"
+      : "new_lead_follow_up_scheduled";
+    const followUpRecord = {
+      follow_up_date: followUpDeclined ? null : followUpDate,
+      follow_up_time: followUpDeclined ? null : followUpTime,
+      follow_up_timezone: followUpDeclined ? null : followUpTimezone,
+      follow_up_reason: followUpReason,
+      follow_up_declined: followUpDeclined,
+      follow_up_at: nextFollowUp
+    };
     await pool.query(
-      `UPDATE ai_calls SET outcome = 'needs_review', priority = $2,
-       next_action = $3, result = result || $4::jsonb, updated_at = NOW()
+      `UPDATE ai_calls SET outcome = $2, priority = 'normal',
+       next_action = $3, summary = COALESCE($4, summary),
+       result = result || $5::jsonb, updated_at = NOW()
        WHERE call_id = $1`,
       [
         call.call_id,
-        priority,
-        reason,
+        callOutcome,
+        followUpDeclined
+          ? "Caller declined readiness-application follow-up"
+          : `Readiness-application follow-up scheduled for ${nextFollowUp}`,
+        callSummary,
         JSON.stringify({
-          inbound_follow_up: { reason, priority, next_follow_up: nextFollowUp }
+          inbound_follow_up: followUpRecord,
+          ...followUpRecord,
+          call_outcome: callOutcome,
+          ...(callSummary ? { call_summary: callSummary } : {})
         })
       ]
     );
     await appendAction(call.call_id, {
       action: name,
       success: true,
-      priority,
-      next_follow_up: nextFollowUp
+      ...followUpRecord
     });
     let followUpItem = null;
     if (call.monday_item_id && INBOUND_MONDAY_CONNECTED) {
       try {
         await updateInboundCallerItem(call.monday_item_id, {
-          caller_type: "Existing Applicant Follow-Up",
-          inbound_status: "Follow-Up Needed",
-          follow_up_needed: "Yes",
-          priority,
-          next_follow_up: nextFollowUp
+          inbound_status: followUpDeclined ? "Follow-Up Declined" : "Follow-Up Scheduled",
+          follow_up_needed: followUpDeclined ? "No" : "Yes",
+          next_follow_up: nextFollowUp,
+          summary: callSummary,
+          call_status: callOutcome
         });
-        await moveInboundCallerToGroup(
-          call.monday_item_id,
-          INBOUND_MONDAY.groups.existingApplicantFollowUp
-        );
-        followUpItem = await createInboundFollowUpRecord(
-          call.monday_item_id,
-          reason
-        );
+        if (!followUpDeclined) {
+          followUpItem = await createInboundFollowUpRecord(
+            call.monday_item_id,
+            `Readiness application at ${nextFollowUp}`
+          );
+        }
       } catch (error) {
         inboundLog("[MONDAY]", "follow_up_update_failed", {
           call_id: call.call_id,
@@ -5663,10 +5914,14 @@ async function executeInboundTool(call, name, args) {
     }
     return {
       success: true,
-      follow_up_created: true,
+      follow_up_created: !followUpDeclined,
+      follow_up_declined: followUpDeclined,
       follow_up_item_id: followUpItem?.id || null,
-      priority,
-      next_follow_up: nextFollowUp
+      follow_up_date: followUpRecord.follow_up_date,
+      follow_up_time: followUpRecord.follow_up_time,
+      follow_up_timezone: followUpRecord.follow_up_timezone,
+      next_follow_up: nextFollowUp,
+      call_outcome: callOutcome
     };
   }
 
@@ -6685,6 +6940,7 @@ app.get(
           summary: call.summary,
           transcript: call.transcript,
           result: {
+            ...publicCallResult(call.result || {}),
             purchase_timeline_detail: call.result?.purchase_timeline_detail,
             time_frame: call.result?.time_frame,
             interest_level: call.result?.interest_level,
@@ -7091,8 +7347,11 @@ mediaServer.on("connection", (twilioSocket) => {
   }
 
   function exactFinalClosingSpoken(value) {
-    const expected =
-      "Thank you for calling the DPA Help Center. Please feel free to hang up and disconnect the call.";
+    const firstName = cleanText(call?.payload?.first_name, 100);
+    const expected = `${firstName
+      ? `Thank you for calling the DPA Help Center, ${firstName}.`
+      : "Thank you for calling the DPA Help Center."
+    } We appreciate the opportunity to help you on your journey toward homeownership. Remember, the next step is to complete the readiness application at dpahelpcenter.com. Have a wonderful day.`;
     return normalizeCustomerUtterance(value) === normalizeCustomerUtterance(expected);
   }
 
@@ -7755,29 +8014,50 @@ return true;
         final_hangup_requested: true,
         completion_reason: "normal_completion",
         terminal_action: name,
-        normal_completion_recorded_at: new Date().toISOString()
+        normal_completion_recorded_at: new Date().toISOString(),
+        call_started_at: call.started_at || call.answered_at || call.created_at,
+        call_ended_at: new Date().toISOString(),
+        transcript_url: `${PUBLIC_BASE_URL}/api/v1/calls/${encodeURIComponent(call.call_id)}`,
+        recording_url: cleanText(
+          call.result?.recording_url || call.payload?.recording_url,
+          1000
+        )
       });
       call = (await getCallById(call.call_id)) || call;
-      const followUpNeeded = Boolean(call.result?.inbound_follow_up);
+      const followUpRecord = call.result?.inbound_follow_up || null;
+      const followUpDeclined = followUpRecord?.follow_up_declined === true;
+      const followUpScheduled = Boolean(
+        followUpRecord?.follow_up_at && !followUpDeclined
+      );
       const transferredToOutbound = call.result?.transferred_to_outbound === true;
+      const inboundIntent = call.intent || call.result?.inbound_intent;
+      const finalInboundOutcome = call.result?.call_outcome || call.outcome;
       try {
         await saveInboundCallSummary({
           call_id: call.call_id,
-          intent: call.intent || call.result?.inbound_intent,
-          outcome: call.outcome,
+          intent: inboundIntent,
+          outcome: finalInboundOutcome,
           summary: call.summary,
           next_action: call.next_action,
           inbound_status: transferredToOutbound
             ? "Transferred to Outbound"
-            : followUpNeeded
-              ? "Follow-Up Needed"
-              : "Closed",
-          follow_up_needed: followUpNeeded || transferredToOutbound ? "Yes" : "No",
+            : followUpScheduled
+              ? "Follow-Up Scheduled"
+              : followUpDeclined
+                ? "Follow-Up Declined"
+                : "Closed",
+          follow_up_needed: followUpScheduled || transferredToOutbound ? "Yes" : "No",
+          call_status: finalInboundOutcome,
+          date_called: call.started_at || call.created_at,
           group_id: transferredToOutbound
             ? INBOUND_MONDAY.groups.transferredToOutbound
-            : followUpNeeded
-              ? INBOUND_MONDAY.groups.existingApplicantFollowUp
-              : INBOUND_MONDAY.groups.closed
+            : followUpDeclined
+              ? INBOUND_MONDAY.groups.closed
+              : followUpScheduled && inboundIntent === "EXISTING_APPLICATION_FOLLOWUP"
+                ? INBOUND_MONDAY.groups.existingApplicantFollowUp
+                : followUpScheduled
+                  ? null
+                  : INBOUND_MONDAY.groups.closed
         });
       } catch (error) {
         inboundLog("[INBOUND]", "completion_summary_save_failed", {
@@ -7805,8 +8085,11 @@ return true;
       }
     });
     if (terminalActionSucceeded) {
-      const finalClosing =
-        "Thank you for calling the DPA Help Center. Please feel free to hang up and disconnect the call.";
+      const firstName = cleanText(call.payload?.first_name, 100);
+      const finalClosing = `${firstName
+        ? `Thank you for calling the DPA Help Center, ${firstName}.`
+        : "Thank you for calling the DPA Help Center."
+      } We appreciate the opportunity to help you on your journey toward homeownership. Remember, the next step is to complete the readiness application at dpahelpcenter.com. Have a wonderful day.`;
       requestAssistantResponse({
         queueIfBusy: true,
         allowTerminalClosing: true,
@@ -7877,7 +8160,7 @@ return true;
             response: {
               output_modalities: ["audio"],
               instructions:
-                'Say exactly: "Thank you for calling the DPA Help Center. This is Daisy. How can I help you today?" Say nothing else until the caller answers.'
+                'Say exactly: "Thank you for calling the DPA Help Center. This is Daisy speaking. How can I help you?" Say nothing else until the caller answers.'
             }
           });
         }
@@ -8315,9 +8598,11 @@ return true;
             call_id: call.call_id,
             mark_name: returnedMarkName
           }));
-          void physicallyEndActiveTwilioCall(
-            "final_audio_playback_complete"
-          );
+          setTimeout(() => {
+            void physicallyEndActiveTwilioCall(
+              "final_audio_playback_complete"
+            );
+          }, 1200);
         }
         if (!pendingMarkNames.size) {
           scheduleSilenceReminder();
