@@ -385,6 +385,42 @@ function localDateTimeToUtc(localDate, localTime, timezone) {
   return { callbackAt: matches[0], localDate: date.value, localTime: time.value };
 }
 
+function formatInboundFollowUpConfirmation(followUpRecord) {
+  if (
+    !followUpRecord ||
+    followUpRecord.follow_up_declined === true ||
+    !followUpRecord.follow_up_at ||
+    !followUpRecord.follow_up_timezone
+  ) {
+    return "";
+  }
+
+  const followUpAt = new Date(followUpRecord.follow_up_at);
+  if (Number.isNaN(followUpAt.getTime())) return "";
+
+  const timezone = cleanText(followUpRecord.follow_up_timezone, 100);
+  const timezoneLabel =
+    Object.entries(INLINE_TIMEZONES).find(
+      ([, candidate]) => candidate === timezone
+    )?.[0] || "";
+  if (!timezoneLabel) return "";
+
+  const dateLabel = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "long",
+    month: "long",
+    day: "numeric"
+  }).format(followUpAt);
+  const timeLabel = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).format(followUpAt);
+
+  return `Your follow-up call is scheduled for ${dateLabel} at ${timeLabel} ${timezoneLabel} Time.`;
+}
+
 function inlineConfirmedTimezoneFromCall(call) {
   const result = call?.result || {};
   const payload = call?.payload || {};
@@ -1382,8 +1418,7 @@ Once the caller confirms there are no more questions, ask:
 Collect the date and time. If the answer is vague, ask:
 "What specific time would work best for you?"
 
-Use create_inbound_follow_up with follow_up_reason readiness_application. Confirm:
-"I'll follow up with you on [Day and Date] at [Time]."
+Use create_inbound_follow_up with follow_up_reason readiness_application. After it succeeds, save the summary and use complete_call. Do not give a separate generic confirmation. The server will speak the exact saved callback date, time, and timezone immediately before the approved closing and physical hangup.
 
 If the caller does not want a follow-up, say:
 "You can begin whenever you're ready by visiting dpahelpcenter.com."
@@ -7454,7 +7489,13 @@ mediaServer.on("connection", (twilioSocket) => {
 
   function exactFinalClosingSpoken(value) {
     const firstName = cleanText(call?.payload?.first_name, 100);
-    const expected = `${firstName
+    const followUpConfirmation = formatInboundFollowUpConfirmation(
+      call?.result?.inbound_follow_up
+    );
+    const expected = `${followUpConfirmation
+      ? `${followUpConfirmation} `
+      : ""
+    }${firstName
       ? `Thank you for calling the DPA Help Center, ${firstName}.`
       : "Thank you for calling the DPA Help Center."
     } We appreciate the opportunity to help you on your journey toward homeownership. Remember, the next step is to complete the readiness application at dpahelpcenter.com. Have a wonderful day.`;
@@ -8192,7 +8233,13 @@ return true;
     });
     if (terminalActionSucceeded) {
       const firstName = cleanText(call.payload?.first_name, 100);
-      const finalClosing = `${firstName
+      const followUpConfirmation = formatInboundFollowUpConfirmation(
+        call.result?.inbound_follow_up
+      );
+      const finalClosing = `${followUpConfirmation
+        ? `${followUpConfirmation} `
+        : ""
+      }${firstName
         ? `Thank you for calling the DPA Help Center, ${firstName}.`
         : "Thank you for calling the DPA Help Center."
       } We appreciate the opportunity to help you on your journey toward homeownership. Remember, the next step is to complete the readiness application at dpahelpcenter.com. Have a wonderful day.`;
