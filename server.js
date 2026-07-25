@@ -7487,12 +7487,12 @@ mediaServer.on("connection", (twilioSocket) => {
     stopCurrentCallAutomation();
     finalAbsoluteHangupTimer = setTimeout(() => {
       void physicallyEndActiveTwilioCall("absolute_normal_end_timeout");
-    }, 30000);
+    }, 60000);
     console.log(JSON.stringify({
       event: "normal_call_termination_started",
       call_id: call?.call_id || null,
       reason,
-      absolute_timeout_ms: 30000
+      absolute_timeout_ms: 60000
     }));
     return true;
   }
@@ -7538,7 +7538,7 @@ mediaServer.on("connection", (twilioSocket) => {
     }));
     finalHangupFallbackTimer = setTimeout(() => {
       void physicallyEndActiveTwilioCall("final_mark_timeout");
-    }, 8000);
+    }, 45000);
     return true;
   }
 
@@ -8699,6 +8699,10 @@ return true;
           returnedMarkName &&
           returnedMarkName === finalPlaybackMarkName
         ) {
+          if (finalHangupFallbackTimer) {
+            clearTimeout(finalHangupFallbackTimer);
+            finalHangupFallbackTimer = null;
+          }
           console.log(JSON.stringify({
             event: "final_hangup_mark_received",
             call_id: call.call_id,
