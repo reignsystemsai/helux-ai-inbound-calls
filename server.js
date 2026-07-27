@@ -2152,7 +2152,7 @@ const INBOUND_TOOLS = Object.freeze([
       call_summary: { type: ["string", "null"] },
       call_outcome: { type: ["string", "null"] }
     },
-    ["intent"]
+    []
   ),
   inlineTool(
     "lookup_existing_outbound_applicant",
@@ -3211,6 +3211,23 @@ function normalizeInboundTaxReturnStatus(value) {
   return cleaned;
 }
 
+function normalizeInboundEmail(value) {
+  const cleaned = cleanText(value, 320);
+  if (!cleaned) return null;
+  const normalized = cleaned
+    .toLowerCase()
+    .replace(/\s+at\s+/g, "@")
+    .replace(/\s+dot\s+/g, ".")
+    .replace(/\s+underscore\s+/g, "_")
+    .replace(/\s+(?:dash|hyphen)\s+/g, "-")
+    .replace(/\s*@\s*/g, "@")
+    .replace(/\s*\.\s*/g, ".")
+    .replace(/\s+/g, "");
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)
+    ? normalized
+    : null;
+}
+
 function inboundCallerItemName(data = {}) {
   const fullName = cleanText(data.full_name || data.name, 160);
   if (fullName) return fullName;
@@ -3539,9 +3556,8 @@ function inboundCallSnapshot(call, overrides = {}) {
       overrides.phone || call?.phone || result.phone ||
         result.phone_number || payload.phone_number || payload.caller_phone
     ),
-    email: cleanText(
-      overrides.email || result.email || payload.email,
-      320
+    email: normalizeInboundEmail(
+      overrides.email || result.email || payload.email
     ),
     credit_score: cleanText(
       overrides.credit_score || result.credit_score ||
@@ -3577,14 +3593,16 @@ function inboundCallSnapshot(call, overrides = {}) {
       overrides.lead_source || result.lead_source || payload.lead_source,
       160
     ),
-    next_follow_up: overrides.next_follow_up || result.next_follow_up ||
+    next_follow_up: overrides.next_follow_up || result.next_follow_up_date ||
+      followUp.follow_up_date || result.next_follow_up ||
       result.follow_up_at || followUp.follow_up_at || null
   };
 }
 
-function buildInboundCompletionSummary(call, completionStatus) {
+function buildInboundCompletionSummary(call, completionStatus, sourceSummary) {
   const result = call?.result || {};
   const followUp = result.inbound_follow_up || {};
+  const detailedSummary = cleanText(sourceSummary, 1800);
   const readinessStatus = result.application_status ||
     (result.readiness_application_completed === true
       ? "Completed"
@@ -3593,8 +3611,14 @@ function buildInboundCompletionSummary(call, completionStatus) {
         : "Not confirmed");
   const followUpSummary = followUp.follow_up_declined === true
     ? "Declined"
-    : followUp.follow_up_at || result.follow_up_at
-      ? `Scheduled for ${followUp.follow_up_at || result.follow_up_at}`
+    : followUp.follow_up_date || result.follow_up_date
+      ? `Scheduled for ${followUp.follow_up_date || result.follow_up_date}` +
+        `${followUp.follow_up_time || result.follow_up_time
+          ? ` at ${followUp.follow_up_time || result.follow_up_time}`
+          : ""}` +
+        `${followUp.follow_up_timezone || result.follow_up_timezone
+          ? ` ${followUp.follow_up_timezone || result.follow_up_timezone}`
+          : ""}`
       : "Not scheduled";
   const normalCompletion =
     result.normal_completion_recorded === true ||
@@ -3617,6 +3641,7 @@ function buildInboundCompletionSummary(call, completionStatus) {
 
   return cleanText(
     [
+      ...(detailedSummary ? [`Call details: ${detailedSummary}`] : []),
       `Why the caller called: ${reason}`,
       `Main question: ${mainQuestion}`,
       `Credit score: ${cleanText(result.estimated_credit_score, 100) || "Not provided"}`,
@@ -3645,7 +3670,21 @@ async function saveInboundCallSummary(data = {}) {
   );
   let call = await getCallById(callId);
   if (!call) return null;
-  const summary = buildInboundCompletionSummary(call, data.completion_status);
+  const hasSavedAgentSummary = Object.prototype.hasOwnProperty.call(
+    call.result || {},
+    "agent_call_summary"
+  );
+  const sourceSummary = cleanText(
+    hasSavedAgentSummary
+      ? call.result.agent_call_summary
+      : call.result?.call_summary || data.summary || call.summary,
+    1800
+  );
+  const summary = buildInboundCompletionSummary(
+    call,
+    data.completion_status,
+    sourceSummary
+  );
   const snapshot = inboundCallSnapshot(call, {
     ...data,
     summary,
@@ -3666,6 +3705,7 @@ async function saveInboundCallSummary(data = {}) {
         credit_score: snapshot.credit_score,
         tax_return_status: snapshot.tax_return_status,
         date_called: snapshot.date_called,
+        agent_call_summary: sourceSummary,
         summary,
         call_summary: summary,
         caller_type: snapshot.caller_type,
@@ -6090,14 +6130,30 @@ async function executeInboundTool(call, name, args) {
   const safeArgs = args && typeof args === "object" ? args : {};
 
   if (name === "save_inbound_caller_context") {
-    const intent = cleanText(safeArgs.intent, 80);
-    if (!["NEW_DPA_INQUIRY", "EXISTING_APPLICATION_FOLLOWUP", "OTHER"].includes(intent)) {
+    const supportedIntents = [
+      "NEW_DPA_INQUIRY",
+      "EXISTING_APPLICATION_FOLLOWUP",
+      "OTHER"
+    ];
+    const suppliedIntent = cleanText(safeArgs.intent, 80);
+    if (suppliedIntent && !supportedIntents.includes(suppliedIntent)) {
       return { success: false, error: "A supported inbound intent is required." };
     }
+    const savedIntent = cleanText(
+      call.intent || call.result?.inbound_intent || call.payload?.inbound_intent,
+      80
+    );
+    const intent = suppliedIntent ||
+      (supportedIntents.includes(savedIntent) ? savedIntent : "OTHER");
     const suppliedPhone = cleanText(safeArgs.phone_number, 100);
     const phoneNumber = suppliedPhone ? normalizePhone(suppliedPhone) : null;
     if (suppliedPhone && !phoneNumber) {
       return { success: false, error: "The mobile phone number is invalid." };
+    }
+    const suppliedEmail = cleanText(safeArgs.email, 320);
+    const email = normalizeInboundEmail(suppliedEmail);
+    if (suppliedEmail && !email) {
+      return { success: false, error: "A valid email address is required." };
     }
     const estimatedHomePriceNumber = Number(
       String(safeArgs.estimated_home_price ?? "").replace(/[$,\s]/g, "")
@@ -6140,7 +6196,7 @@ async function executeInboundTool(call, name, args) {
       last_name: lastName,
       phone_number: phoneNumber,
       phone: phoneNumber || normalizePhone(call.phone),
-      email: cleanText(safeArgs.email, 320),
+      email,
       lead_source: cleanText(safeArgs.lead_source, 160),
       estimated_home_price: estimatedHomePrice,
       estimated_five_percent_assistance: estimatedFivePercentAssistance,
@@ -6344,6 +6400,7 @@ async function executeInboundTool(call, name, args) {
           inbound_follow_up: followUpRecord,
           ...followUpRecord,
           next_follow_up: nextFollowUp,
+          next_follow_up_date: followUpDeclined ? null : followUpDate,
           follow_up_needed: followUpDeclined ? "No" : "Yes",
           call_outcome: callOutcome,
           call_status: callOutcome,
@@ -6367,7 +6424,7 @@ async function executeInboundTool(call, name, args) {
         await updateInboundCallerItem(updatedCall.monday_item_id, inboundCallSnapshot(updatedCall, {
           inbound_status: followUpDeclined ? "Follow-Up Declined" : "Follow-Up Scheduled",
           follow_up_needed: followUpDeclined ? "No" : "Yes",
-          next_follow_up: nextFollowUp,
+          next_follow_up: followUpDeclined ? null : followUpDate,
           summary: callSummary,
           call_status: callOutcome
         }));
