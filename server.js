@@ -5,6 +5,15 @@ const { Pool } = require("pg");
 const twilio = require("twilio");
 const WebSocket = require("ws");
 const { WebSocketServer } = WebSocket;
+const {
+  KeyedSerialQueue,
+  mondayDateValue: buildInboundMondayDateValue,
+  normalizeLocalDate,
+  normalizeLocalTime,
+  persistLatestSession,
+  retryTransientOperation,
+  validateMondayEnvelope
+} = require("./inbound-persistence");
 
 /* Inlined production dependencies — formerly ./src modules */
 
@@ -721,6 +730,12 @@ const DAISY_MIN_TRANSCRIPT_SETTLE_MS = Math.max(
 const MONDAY_API_URL = "https://api.monday.com/v2";
 const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN || "";
 const MONDAY_API_VERSION = process.env.MONDAY_API_VERSION || "2026-04";
+const INBOUND_MONDAY_DIAGNOSTIC_CALL_ID = String(
+  process.env.INBOUND_MONDAY_DIAGNOSTIC_CALL_ID || ""
+).trim();
+const INBOUND_MONDAY_DIAGNOSTICS_ONCE =
+  String(process.env.INBOUND_MONDAY_DIAGNOSTICS_ONCE || "false")
+    .toLowerCase() === "true";
 const INBOUND_MONDAY = Object.freeze({
   boards: Object.freeze({
     inbound: String(process.env.INBOUND_BOARD_ID || "18422988712"),
@@ -786,6 +801,10 @@ const MONDAY_METADATA_CACHE_MS = Math.max(
 const MONDAY_REQUEST_TIMEOUT_MS = Math.max(
   3000,
   Number(process.env.MONDAY_REQUEST_TIMEOUT_MS || 12000)
+);
+const INBOUND_FINAL_PERSIST_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.INBOUND_FINAL_PERSIST_TIMEOUT_MS || 45000)
 );
 const MONDAY_SYNC_DEBOUNCE_MS = Math.max(
   100,
@@ -858,6 +877,10 @@ let inboundMondayConnectionHealthy = false;
 const mondaySyncTimers = new Map();
 const mondaySyncChains = new Map();
 const inboundMondayCallerPromises = new Map();
+const inboundFinalPersistenceChains = new Map();
+const inboundSessionPersistenceQueue = new KeyedSerialQueue();
+let inboundMondayDiagnosticClaimedCallId = null;
+let inboundMondayDiagnosticCompleted = false;
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -3098,6 +3121,19 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function withTimeout(promise, milliseconds, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(message || "The operation timed out.")),
+      milliseconds
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function normalizeMondayKey(value) {
   return String(value || "")
     .trim()
@@ -3221,6 +3257,79 @@ function inboundLog(prefix, event, details = {}) {
   console.log(`${prefix} ${JSON.stringify({ event, ...details })}`);
 }
 
+function inboundMondayDiagnosticContext(callId) {
+  const normalizedCallId = cleanText(callId, 100);
+  if (!normalizedCallId || inboundMondayDiagnosticCompleted) return null;
+  if (INBOUND_MONDAY_DIAGNOSTIC_CALL_ID) {
+    return normalizedCallId === INBOUND_MONDAY_DIAGNOSTIC_CALL_ID
+      ? { call_id: normalizedCallId }
+      : null;
+  }
+  if (!INBOUND_MONDAY_DIAGNOSTICS_ONCE) return null;
+  if (!inboundMondayDiagnosticClaimedCallId) {
+    inboundMondayDiagnosticClaimedCallId = normalizedCallId;
+    inboundLog("[MONDAY_DIAGNOSTIC]", "test_call_claimed", {
+      call_id: normalizedCallId
+    });
+  }
+  return inboundMondayDiagnosticClaimedCallId === normalizedCallId
+    ? { call_id: normalizedCallId }
+    : null;
+}
+
+function maskMondayDiagnosticText(value, visibleCharacters = 1) {
+  const text = cleanText(value, 1000);
+  if (!text) return null;
+  return `${text.slice(0, visibleCharacters)}***`;
+}
+
+function sanitizeMondayDiagnostic(value, key = "") {
+  const normalizedKey = normalizeMondayKey(key);
+  if (
+    /token|authorization|password|secret|socialsecurity|ssn|bank|routingnumber|accountnumber|onetime|otp/
+      .test(normalizedKey)
+  ) {
+    return "[REDACTED]";
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeMondayDiagnostic(entry, key));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, childValue]) => [
+        childKey,
+        sanitizeMondayDiagnostic(childValue, childKey)
+      ])
+    );
+  }
+  if (/email/.test(normalizedKey)) {
+    const email = normalizeInboundEmail(value);
+    if (!email) return null;
+    const [local, domain] = email.split("@");
+    return `${local.slice(0, 1)}***@${domain}`;
+  }
+  if (/phone/.test(normalizedKey)) {
+    return maskedPhoneLastFour(value);
+  }
+  if (
+    normalizedKey === "name" ||
+    /firstname|lastname|fullname|customername/.test(normalizedKey)
+  ) {
+    return maskMondayDiagnosticText(value);
+  }
+  if (/summary|transcript|answers|questions|notes/.test(normalizedKey)) {
+    const text = cleanText(value, 4000);
+    return text ? { present: true, length: text.length } : null;
+  }
+  return value;
+}
+
+function sanitizeMondayDiagnosticColumn(columnId, value) {
+  const logicalName = Object.entries(INBOUND_MONDAY.columns)
+    .find(([, configuredId]) => configuredId === columnId)?.[0] || columnId;
+  return sanitizeMondayDiagnostic(value, logicalName);
+}
+
 function maskedPhoneLastFour(value) {
   const digits = String(value || "").replace(/\D/g, "");
   return digits ? `***${digits.slice(-4)}` : null;
@@ -3240,6 +3349,12 @@ function normalizeInboundTaxReturnStatus(value) {
   const cleaned = cleanText(value, 100);
   if (!cleaned) return "";
   const normalized = normalizeMondayKey(cleaned);
+  if (
+    ["null", "undefined", "unknown", "none", "notprovided", "na"]
+      .includes(normalized)
+  ) {
+    return "";
+  }
   if (
     normalized === "yes" ||
     normalized === "twoyearsfiled" ||
@@ -3265,13 +3380,20 @@ function normalizeInboundTaxReturnStatus(value) {
   return cleaned;
 }
 
+function normalizeInboundCreditScore(value) {
+  const cleaned = cleanText(value, 100);
+  if (!cleaned) return "";
+  const matches = cleaned.match(/\b\d{3}\b/g) || [];
+  if (matches.length !== 1) return "";
+  const score = Number(matches[0]);
+  return score >= 300 && score <= 850 ? String(score) : "";
+}
+
 function cleanInboundContactValue(value, maximumLength = 320) {
   const cleaned = cleanText(value, maximumLength);
   if (!cleaned) return null;
-  const sentinel = cleaned
-    .toLowerCase()
-    .replace(/[\s{}\[\]()<>"']/g, "");
-  return ["null", "undefined", "unknown", "notprovided", "n/a", "na", "none"]
+  const sentinel = normalizeMondayKey(cleaned);
+  return ["null", "undefined", "unknown", "notprovided", "na", "none"]
     .includes(sentinel)
     ? null
     : cleaned;
@@ -3290,7 +3412,10 @@ function inboundValuesEqual(left, right) {
 }
 
 function inboundSessionFieldEqual(field, left, right) {
-  if (["full_name", "first_name", "last_name", "email"].includes(field)) {
+  if (field === "email") {
+    return normalizeInboundEmail(left) === normalizeInboundEmail(right);
+  }
+  if (["full_name", "first_name", "last_name"].includes(field)) {
     return normalizeMondayKey(left) === normalizeMondayKey(right);
   }
   return inboundValuesEqual(left, right);
@@ -3317,7 +3442,7 @@ function inboundCallerFirstName(call) {
 }
 
 function normalizeInboundEmail(value) {
-  const cleaned = cleanText(value, 320);
+  const cleaned = cleanInboundContactValue(value, 320);
   if (!cleaned) return null;
   const normalized = cleaned
     .replace(/[.,;:!?]+$/g, "")
@@ -3333,6 +3458,50 @@ function normalizeInboundEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)
     ? normalized
     : null;
+}
+
+function normalizeInboundLocalDate(value) {
+  return normalizeLocalDate(cleanText(value, 30));
+}
+
+function normalizeInboundLocalTime(value) {
+  return normalizeLocalTime(cleanText(value, 20));
+}
+
+function usefulInboundSummary(value) {
+  const summary = cleanText(value, 4000);
+  if (!summary || !cleanInboundContactValue(summary, 4000)) return null;
+  const normalized = summary.toLowerCase().replace(/[.!]+$/g, "").trim();
+  if (
+    /^(?:inbound )?call (?:completed|ended|disconnected)(?: normally| successfully)?$/.test(normalized) ||
+    /^(?:call )?summary$/.test(normalized) ||
+    /^(?:no |not )?summary (?:available|provided|captured)$/.test(normalized) ||
+    /^(?:caller|customer) called(?: for (?:help|assistance))?$/.test(normalized)
+  ) {
+    return null;
+  }
+  return summary;
+}
+
+function bestInboundDetailedSummary(call, candidate) {
+  const result = call?.result || {};
+  for (const value of [
+    result.agent_call_summary,
+    result.call_summary,
+    candidate,
+    call?.summary
+  ]) {
+    const summary = usefulInboundSummary(value);
+    if (summary) return summary;
+  }
+  return null;
+}
+
+function mostCompleteInboundSummary(...values) {
+  return values
+    .map((value) => usefulInboundSummary(value))
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)[0] || null;
 }
 
 function inboundCallerItemName(data = {}) {
@@ -3352,7 +3521,7 @@ function inboundDateCalled(value) {
     : date.toISOString().slice(0, 10);
 }
 
-async function mondayGraphql(query, variables = {}) {
+async function mondayGraphql(query, variables = {}, diagnostic = null) {
   if (!INBOUND_MONDAY_CONNECTED) {
     throw new Error("Inbound monday.com is not configured.");
   }
@@ -3369,27 +3538,45 @@ async function mondayGraphql(query, variables = {}) {
       body: JSON.stringify({ query, variables }),
       signal: controller.signal
     });
-    const body = await response.json();
-    if (!response.ok) throw new Error(`monday.com HTTP ${response.status}`);
-    if (Array.isArray(body.errors) && body.errors.length) {
-      throw new Error(
-        `monday.com GraphQL error: ${body.errors
-          .map((entry) => cleanText(entry.message, 300))
-          .filter(Boolean)
-          .join(" | ")}`
-      );
+    const rawResponseBody = await response.text();
+    let body = {};
+    try {
+      body = rawResponseBody ? JSON.parse(rawResponseBody) : {};
+    } catch {
+      body = { raw_response: cleanText(rawResponseBody, 4000) };
     }
+    if (diagnostic) {
+      inboundLog("[MONDAY_DIAGNOSTIC]", "raw_api_response", {
+        ...diagnostic,
+        http_status: response.status,
+        response_body: sanitizeMondayDiagnostic(body)
+      });
+      if (Array.isArray(body.errors) && body.errors.length) {
+        inboundLog("[MONDAY_DIAGNOSTIC]", "graphql_errors", {
+          ...diagnostic,
+          errors: sanitizeMondayDiagnostic(body.errors, "graphql_errors")
+        });
+      }
+    }
+    const data = validateMondayEnvelope(response.status, body);
     inboundMondayConnectionHealthy = true;
-    return body.data || {};
+    return data;
   } catch (error) {
     inboundMondayConnectionHealthy = false;
+    if (diagnostic) {
+      inboundLog("[MONDAY_DIAGNOSTIC]", "api_request_failed", {
+        ...diagnostic,
+        error: cleanText(error.message, 1000),
+        graphql_errors: error.mondayErrors || null
+      });
+    }
     throw error;
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function loadInboundMondayMetadata(force = false) {
+async function loadInboundMondayMetadata(force = false, diagnostic = null) {
   if (inboundMondayMetadataCache && !force) return inboundMondayMetadataCache;
   const data = await mondayGraphql(
     `query InboundBoardMetadata($boardIds: [ID!]!) {
@@ -3400,7 +3587,8 @@ async function loadInboundMondayMetadata(force = false) {
         columns { id title type settings }
       }
     }`,
-    { boardIds: [MONDAY_BOARD_ID] }
+    { boardIds: [MONDAY_BOARD_ID] },
+    diagnostic
   );
   const board = data.boards?.[0];
   if (!board) throw new Error("Inbound monday.com board was not found.");
@@ -3436,8 +3624,8 @@ function resolveInboundMondayLabel(column, desiredLabel) {
   ) || null;
 }
 
-async function inboundMondayValues(data = {}) {
-  const metadata = await loadInboundMondayMetadata();
+async function inboundMondayValues(data = {}, diagnostic = null) {
+  const metadata = await loadInboundMondayMetadata(false, diagnostic);
   const values = {};
   const statusFields = [
     [INBOUND_MONDAY.columns.callerType, data.caller_type],
@@ -3491,11 +3679,12 @@ async function inboundMondayValues(data = {}) {
     }
   }
   if (data.next_follow_up) {
-    const date = new Date(data.next_follow_up);
-    if (!Number.isNaN(date.getTime())) {
-      values[INBOUND_MONDAY.columns.nextFollowUp] = {
-        date: date.toISOString().slice(0, 10)
-      };
+    const followUpValue = buildInboundMondayDateValue(
+      data.next_follow_up,
+      data.follow_up_time
+    );
+    if (followUpValue) {
+      values[INBOUND_MONDAY.columns.nextFollowUp] = followUpValue;
     }
   }
   if (data.phone) {
@@ -3510,29 +3699,65 @@ async function inboundMondayValues(data = {}) {
 async function findInboundCallerByPhone(phone) {
   const normalized = normalizePhone(phone);
   if (!normalized || !INBOUND_MONDAY_CONNECTED) return null;
-  const metadata = await loadInboundMondayMetadata();
   const phoneColumnId = INBOUND_MONDAY.columns.phoneNumber;
-  const data = await mondayGraphql(
+  const firstPage = await mondayGraphql(
     `query FindInboundCaller($boardIds: [ID!]!) {
       boards(ids: $boardIds) {
-        items_page(limit: 100) {
+        items_page(limit: 500) {
+          cursor
           items { id name group { id } column_values { id text value } }
         }
       }
     }`,
     { boardIds: [MONDAY_BOARD_ID] }
   );
-  const items = data.boards?.[0]?.items_page?.items || [];
-  return items.find((item) => {
-    const value = item.column_values?.find((column) => column.id === phoneColumnId);
-    return normalizePhone(value?.text) === normalized;
-  }) || null;
+  let page = firstPage.boards?.[0]?.items_page || {};
+  for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+    const match = (page.items || []).find((item) => {
+      const value = item.column_values?.find(
+        (column) => column.id === phoneColumnId
+      );
+      return normalizePhone(value?.text) === normalized;
+    });
+    if (match) return match;
+    const cursor = cleanText(page.cursor, 1000);
+    if (!cursor) break;
+    const nextPage = await mondayGraphql(
+      `query FindInboundCallerNextPage($cursor: String!) {
+        next_items_page(limit: 500, cursor: $cursor) {
+          cursor
+          items { id name group { id } column_values { id text value } }
+        }
+      }`,
+      { cursor }
+    );
+    page = nextPage.next_items_page || {};
+  }
+  return null;
 }
 
-async function createInboundCallerItem(data = {}) {
+async function createInboundCallerItem(data = {}, options = {}) {
   const phone = normalizePhone(data.phone);
   const itemName = inboundCallerItemName({ ...data, phone });
-  const columnValues = await inboundMondayValues({ ...data, phone });
+  const diagnostic = inboundMondayDiagnosticContext(options.callId);
+  const columnValues = await inboundMondayValues(
+    { ...data, phone },
+    diagnostic ? { ...diagnostic, operation: "board_metadata" } : null
+  );
+  if (diagnostic) {
+    inboundLog("[MONDAY_CREATE]", "item_creation_request", {
+      ...diagnostic,
+      twilio_call_sid: cleanText(options.twilioCallSid, 80),
+      board_id: MONDAY_BOARD_ID,
+      group_id: INBOUND_MONDAY.groups.newInboundCalls,
+      item_name: maskMondayDiagnosticText(itemName),
+      column_ids: Object.keys(columnValues),
+      columns: Object.entries(columnValues).map(([columnId, value]) => ({
+        column_id: columnId,
+        value: sanitizeMondayDiagnosticColumn(columnId, value)
+      }))
+    });
+  }
   const result = await mondayGraphql(
     `mutation CreateInboundCaller($boardId: ID!, $groupId: String!, $itemName: String!, $columnValues: JSON!) {
       create_item(board_id: $boardId, group_id: $groupId, item_name: $itemName, column_values: $columnValues) { id name }
@@ -3542,19 +3767,53 @@ async function createInboundCallerItem(data = {}) {
       groupId: INBOUND_MONDAY.groups.newInboundCalls,
       itemName,
       columnValues: JSON.stringify(columnValues)
-    }
+    },
+    diagnostic ? { ...diagnostic, operation: "create_item" } : null
   );
   const item = result.create_item || null;
+  if (!item?.id) {
+    throw new Error("monday.com did not return an inbound item ID.");
+  }
   inboundLog("[MONDAY]", "inbound_item_created", {
     item_id: item?.id || null,
     caller_phone: maskedPhoneLastFour(phone)
   });
+  if (diagnostic) {
+    inboundLog("[MONDAY_CREATE]", "item_creation_completed", {
+      ...diagnostic,
+      board_id: MONDAY_BOARD_ID,
+      monday_item_id: String(item.id)
+    });
+  }
   return item;
 }
 
-async function updateInboundCallerItem(itemId, data = {}) {
+async function updateInboundCallerItem(itemId, data = {}, options = {}) {
   if (!itemId) return null;
-  const columnValues = await inboundMondayValues(data);
+  const diagnostic = inboundMondayDiagnosticContext(options.callId);
+  const columnValues = await inboundMondayValues(
+    data,
+    diagnostic ? { ...diagnostic, operation: "board_metadata" } : null
+  );
+  if (diagnostic) {
+    inboundLog("[MONDAY_DIAGNOSTIC]", "update_payload", {
+      ...diagnostic,
+      monday_item_id: String(itemId),
+      board_id: MONDAY_BOARD_ID,
+      update_payload: sanitizeMondayDiagnostic(data),
+      column_ids: Object.keys(columnValues),
+      columns: Object.entries(columnValues).map(([columnId, value]) => ({
+        column_id: columnId,
+        value: sanitizeMondayDiagnosticColumn(columnId, value)
+      })),
+      item_name_column: data.full_name || data.name
+        ? {
+            column_id: INBOUND_MONDAY.columns.name,
+            value: maskMondayDiagnosticText(data.full_name || data.name)
+          }
+        : null
+    });
+  }
   let updated = { id: String(itemId) };
   if (Object.keys(columnValues).length) {
     const result = await mondayGraphql(
@@ -3565,7 +3824,10 @@ async function updateInboundCallerItem(itemId, data = {}) {
         boardId: MONDAY_BOARD_ID,
         itemId: String(itemId),
         columnValues: JSON.stringify(columnValues)
-      }
+      },
+      diagnostic
+        ? { ...diagnostic, operation: "change_multiple_column_values" }
+        : null
     );
     updated = result.change_multiple_column_values || updated;
   }
@@ -3575,11 +3837,87 @@ async function updateInboundCallerItem(itemId, data = {}) {
       `mutation RenameInboundCaller($boardId: ID!, $itemId: ID!, $name: String!) {
         change_simple_column_value(board_id: $boardId, item_id: $itemId, column_id: "name", value: $name) { id }
       }`,
-      { boardId: MONDAY_BOARD_ID, itemId: String(itemId), name }
+      { boardId: MONDAY_BOARD_ID, itemId: String(itemId), name },
+      diagnostic
+        ? { ...diagnostic, operation: "change_simple_column_value" }
+        : null
     );
     updated = result.change_simple_column_value || updated;
   }
   return updated;
+}
+
+async function updateInboundCallerFromSession(
+  call,
+  overrides = {},
+  options = {}
+) {
+  if (!call?.monday_item_id || !INBOUND_MONDAY_CONNECTED) return null;
+  const snapshot = inboundCallSnapshot(call, overrides);
+  const previousSnapshot = call.result?.inbound_monday_snapshot || null;
+  if (inboundValuesEqual(previousSnapshot, snapshot)) {
+    return { id: String(call.monday_item_id), skipped: true };
+  }
+  const changedValues =
+    options.forceFullState === true || !previousSnapshot
+      ? snapshot
+      : Object.fromEntries(
+          Object.entries(snapshot).filter(
+            ([field, value]) =>
+              !inboundSessionFieldEqual(field, previousSnapshot[field], value)
+          )
+        );
+  try {
+    return await retryTransientOperation(
+      async () => {
+      const updated = await updateInboundCallerItem(
+        call.monday_item_id,
+        changedValues,
+        { callId: call.call_id }
+      );
+      if (!updated?.id) {
+        throw new Error("monday.com did not confirm the inbound item update.");
+      }
+      await pool.query(
+        `UPDATE ai_calls SET monday_last_sync_at = NOW(),
+         monday_last_error = NULL, result = result || $2::jsonb,
+         updated_at = NOW() WHERE call_id = $1`,
+        [
+          call.call_id,
+          JSON.stringify({
+            inbound_monday_snapshot: snapshot,
+            monday_item_id: String(call.monday_item_id)
+          })
+        ]
+      );
+      return updated;
+      },
+      {
+        maxAttempts: options.maxAttempts || 1,
+        onAttemptFailure: ({ attempt, maxAttempts, retryable, error }) => {
+          inboundLog(
+            retryable ? "[MONDAY_UPDATE]" : "[MONDAY_ERROR]",
+            "inbound_update_attempt_failed",
+            {
+              call_id: call.call_id,
+              item_id: String(call.monday_item_id),
+              attempt,
+              max_attempts: maxAttempts,
+              retryable,
+              error: cleanText(error.message, 300)
+            }
+          );
+        }
+      }
+    );
+  } catch (error) {
+    await pool.query(
+      `UPDATE ai_calls SET monday_last_error = $2, updated_at = NOW()
+       WHERE call_id = $1`,
+      [call.call_id, cleanText(error.message, 4000)]
+    );
+    throw error;
+  }
 }
 
 async function moveInboundCallerToGroup(itemId, groupId) {
@@ -3611,28 +3949,28 @@ function inboundCallSnapshot(call, overrides = {}) {
   const suppliedName = normalizeInboundFullName(
     firstInboundContactValue(
       160,
+      result.full_name,
       overrides.full_name,
-      overrides.name,
-      result.full_name
+      overrides.name
     )
   );
   const firstName = firstInboundContactValue(
     100,
-    overrides.first_name,
     result.first_name,
+    overrides.first_name,
     suppliedName.first_name
   );
   const lastName = firstInboundContactValue(
     100,
-    overrides.last_name,
     result.last_name,
+    overrides.last_name,
     suppliedName.last_name
   );
   const fullName = firstInboundContactValue(
     160,
-    overrides.full_name,
-    result.full_name,
     [firstName, lastName].filter(Boolean).join(" "),
+    result.full_name,
+    overrides.full_name,
     suppliedName.full_name
   );
   const followUp = result.inbound_follow_up || {};
@@ -3657,28 +3995,30 @@ function inboundCallSnapshot(call, overrides = {}) {
     first_name: firstName,
     last_name: lastName,
     phone: normalizePhone(
-      overrides.phone || call?.phone || result.phone ||
-        result.phone_number || payload.phone_number || payload.caller_phone
+      result.phone || result.phone_number || call?.phone || overrides.phone ||
+        payload.phone_number || payload.caller_phone
     ),
     email: normalizeInboundEmail(
-      overrides.email || result.email
+      result.email || overrides.email
     ),
-    credit_score: cleanText(
-      overrides.credit_score || result.credit_score ||
-        result.estimated_credit_score,
-      100
+    credit_score: normalizeInboundCreditScore(
+      result.credit_score || result.estimated_credit_score ||
+        overrides.credit_score
     ),
     tax_return_status: normalizeInboundTaxReturnStatus(
-      overrides.tax_return_status || result.tax_return_status ||
-        result.two_year_tax_filing_status
+      result.tax_return_status || result.two_year_tax_filing_status ||
+        overrides.tax_return_status
     ),
     date_called: inboundDateCalled(
       overrides.date_called || result.date_called ||
         call?.started_at || call?.created_at
     ),
-    summary: cleanText(
-      overrides.summary || result.summary || result.call_summary || call?.summary,
-      4000
+    summary: mostCompleteInboundSummary(
+      result.call_summary,
+      result.agent_call_summary,
+      overrides.summary,
+      result.summary,
+      call?.summary
     ),
     caller_type: "Inbound Call",
     priority: cleanText(overrides.priority || call?.priority, 30),
@@ -3697,9 +4037,35 @@ function inboundCallSnapshot(call, overrides = {}) {
       overrides.lead_source || result.lead_source || payload.lead_source,
       160
     ),
-    next_follow_up: overrides.next_follow_up || result.next_follow_up_date ||
-      followUp.follow_up_date || result.next_follow_up ||
-      result.follow_up_at || followUp.follow_up_at || null
+    next_follow_up: normalizeInboundLocalDate(
+      result.next_follow_up_date || followUp.follow_up_date ||
+        result.callback_local_date || overrides.next_follow_up
+    ),
+    follow_up_time: normalizeInboundLocalTime(
+      result.follow_up_time || followUp.follow_up_time ||
+        result.callback_local_time || overrides.follow_up_time
+    ),
+    follow_up_timezone: cleanText(
+      result.follow_up_timezone || followUp.follow_up_timezone ||
+        result.callback_timezone || overrides.follow_up_timezone,
+      100
+    ),
+    follow_up_at: cleanText(
+      result.follow_up_at || followUp.follow_up_at ||
+        result.callback_at || overrides.follow_up_at,
+      100
+    ),
+    call_direction: cleanText(call?.direction || payload.direction, 20),
+    appointment_type: cleanText(
+      result.appointment_type || result.callback_type ||
+        overrides.appointment_type,
+      100
+    ),
+    completion_date: cleanText(
+      result.call_ended_at || call?.completed_at ||
+        overrides.completion_date,
+      100
+    )
   };
 }
 
@@ -3774,16 +4140,7 @@ async function saveInboundCallSummary(data = {}) {
   );
   let call = await getCallById(callId);
   if (!call) return null;
-  const hasSavedAgentSummary = Object.prototype.hasOwnProperty.call(
-    call.result || {},
-    "agent_call_summary"
-  );
-  const sourceSummary = cleanText(
-    hasSavedAgentSummary
-      ? call.result.agent_call_summary
-      : call.result?.call_summary || data.summary || call.summary,
-    1800
-  );
+  const sourceSummary = bestInboundDetailedSummary(call, data.summary);
   const summary = buildInboundCompletionSummary(
     call,
     data.completion_status,
@@ -3809,14 +4166,24 @@ async function saveInboundCallSummary(data = {}) {
         credit_score: snapshot.credit_score,
         tax_return_status: snapshot.tax_return_status,
         date_called: snapshot.date_called,
-        agent_call_summary: sourceSummary,
+        ...(sourceSummary ? { agent_call_summary: sourceSummary } : {}),
         summary,
-        call_summary: summary,
+        call_summary: sourceSummary || summary,
         caller_type: snapshot.caller_type,
         call_status: snapshot.call_status,
         follow_up_needed: snapshot.follow_up_needed,
         lead_source: snapshot.lead_source,
         next_follow_up: snapshot.next_follow_up,
+        follow_up_time: snapshot.follow_up_time,
+        follow_up_timezone: snapshot.follow_up_timezone,
+        follow_up_at: snapshot.follow_up_at,
+        call_direction: snapshot.call_direction,
+        appointment_type: snapshot.appointment_type,
+        completion_date: snapshot.completion_date,
+        disconnect_reason: cleanText(
+          data.disconnect_reason || call.result?.disconnect_reason,
+          500
+        ),
         monday_item_id: call.monday_item_id || null,
         call_sid: call.twilio_call_sid || null
       })
@@ -3824,19 +4191,20 @@ async function saveInboundCallSummary(data = {}) {
   );
   call = await getCallById(callId);
   if (!INBOUND_MONDAY_CONNECTED) return call;
-  if (!call.monday_item_id) {
-    await ensureInboundMondayCaller(call);
-    call = (await getCallById(callId)) || call;
-  }
-  if (!call.monday_item_id) return call;
   try {
-    const updated = await updateInboundCallerItem(
-      call.monday_item_id,
-      inboundCallSnapshot(call, { ...data, summary })
-    );
-    if (!updated?.id) {
+    const persisted = await persistCallSessionToMonday(callId, {
+      alreadySerialized: true,
+      forceFullState: true,
+      maxAttempts: 3,
+      overrides: {
+        ...data,
+        summary
+      }
+    });
+    if (persisted?.success !== true) {
       throw new Error("monday.com did not confirm the inbound item update.");
     }
+    call = (await getCallById(callId)) || call;
     if (data.group_id) await moveInboundCallerToGroup(call.monday_item_id, data.group_id);
     await mergeCallResult(callId, {
       monday_item_id: String(call.monday_item_id)
@@ -3850,13 +4218,85 @@ async function saveInboundCallSummary(data = {}) {
       call_id: callId,
       error: cleanText(error.message, 300)
     });
+    throw error;
   }
   return call;
 }
 
+async function persistFinalInboundSession(data = {}) {
+  const callId = cleanText(data.call_id, 100);
+  if (!callId) return null;
+  const diagnostic = inboundMondayDiagnosticContext(callId);
+  const previous =
+    inboundFinalPersistenceChains.get(callId) || Promise.resolve();
+  const operation = previous
+    .catch(() => undefined)
+    .then(() =>
+      inboundSessionPersistenceQueue.run(callId, () =>
+        saveInboundCallSummary(data)
+      )
+    );
+  const pending = withTimeout(
+    operation,
+    INBOUND_FINAL_PERSIST_TIMEOUT_MS,
+    `Final inbound monday.com persistence timed out after ${INBOUND_FINAL_PERSIST_TIMEOUT_MS}ms.`
+  );
+  inboundFinalPersistenceChains.set(callId, pending);
+  try {
+    const call = await pending;
+    inboundLog("[MONDAY]", "final_inbound_persistence_completed", {
+      call_id: callId,
+      item_id: call?.monday_item_id || null,
+      monday_connected: INBOUND_MONDAY_CONNECTED
+    });
+    if (diagnostic) {
+      inboundLog("[MONDAY_FINAL_SAVE]", "final_save_result", {
+        ...diagnostic,
+        success: true,
+        monday_item_id: call?.monday_item_id || null,
+        final_session: sanitizeMondayDiagnostic(call?.result || {})
+      });
+    }
+    return call;
+  } catch (error) {
+    if (diagnostic) {
+      inboundLog("[MONDAY_ERROR]", "final_save_failed", {
+        ...diagnostic,
+        success: false,
+        error: cleanText(error.message, 1000)
+      });
+    }
+    throw error;
+  } finally {
+    if (
+      diagnostic &&
+      inboundMondayDiagnosticClaimedCallId === callId
+    ) {
+      inboundMondayDiagnosticCompleted = true;
+    }
+    if (inboundFinalPersistenceChains.get(callId) === pending) {
+      inboundFinalPersistenceChains.delete(callId);
+    }
+  }
+}
+
 async function syncInboundMondayCaller(call) {
   if (!call || !INBOUND_MONDAY_CONNECTED) return null;
+  const client = await pool.connect();
   try {
+    await client.query("BEGIN");
+    const lockKey = `inbound-monday:${normalizePhone(call.phone) || call.call_id}`;
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [lockKey]);
+    const locked = await client.query(
+      "SELECT * FROM ai_calls WHERE call_id = $1 FOR UPDATE",
+      [call.call_id]
+    );
+    const latestCall = locked.rows[0] || call;
+    if (latestCall.monday_item_id) {
+      await client.query("COMMIT");
+      return { id: String(latestCall.monday_item_id) };
+    }
+    call = latestCall;
     const initialData = inboundCallSnapshot(call, {
       date_called: call.started_at || call.created_at ||
         new Date().toISOString().slice(0, 10),
@@ -3865,13 +4305,50 @@ async function syncInboundMondayCaller(call) {
       inbound_status: "New Inbound Call",
       follow_up_needed: "No"
     });
-    const existing = await findInboundCallerByPhone(call.phone);
-    const item = existing || await createInboundCallerItem(initialData);
+    const diagnostic = inboundMondayDiagnosticContext(call.call_id);
+    if (diagnostic) {
+      inboundLog("[MONDAY_DIAGNOSTIC]", "session_snapshot_before_create", {
+        ...diagnostic,
+        twilio_call_sid: call.twilio_call_sid || null,
+        board_id: MONDAY_BOARD_ID,
+        session: sanitizeMondayDiagnostic(initialData)
+      });
+    }
+    const resolved = await retryTransientOperation(
+      async () => {
+        const existing = await findInboundCallerByPhone(call.phone);
+        if (existing?.id) return { item: existing, existing: true };
+        const item = await createInboundCallerItem(initialData, {
+          callId: call.call_id,
+          twilioCallSid: call.twilio_call_sid
+        });
+        return { item, existing: false };
+      },
+      {
+        maxAttempts: 3,
+        onAttemptFailure: ({ attempt, maxAttempts, retryable, error }) => {
+          inboundLog(
+            retryable ? "[MONDAY_CREATE]" : "[MONDAY_ERROR]",
+            "item_creation_attempt_failed",
+            {
+              call_id: call.call_id,
+              attempt,
+              max_attempts: maxAttempts,
+              retryable,
+              error: cleanText(error.message, 300)
+            }
+          );
+        }
+      }
+    );
+    const { item, existing } = resolved;
     if (item?.id) {
       if (existing) {
-        await updateInboundCallerItem(item.id, initialData);
+        await updateInboundCallerItem(item.id, initialData, {
+          callId: call.call_id
+        });
       }
-      await pool.query(
+      await client.query(
         `UPDATE ai_calls SET monday_item_id = $2, monday_group_id = $3,
          monday_last_sync_at = NOW(), monday_last_error = NULL,
          result = result || $4::jsonb, updated_at = NOW()
@@ -3895,20 +4372,27 @@ async function syncInboundMondayCaller(call) {
             follow_up_needed: initialData.follow_up_needed,
             lead_source: initialData.lead_source,
             next_follow_up: initialData.next_follow_up,
+            inbound_monday_snapshot: initialData,
             monday_item_id: String(item.id),
             call_sid: call.twilio_call_sid || null
           })
         ]
       );
     }
+    await client.query("COMMIT");
     return item;
   } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
     inboundLog("[MONDAY]", "inbound_item_sync_failed", {
       call_id: call.call_id,
       caller_phone: maskedPhoneLastFour(call.phone),
       error: cleanText(error.message, 300)
     });
     return null;
+  } finally {
+    client.release();
   }
 }
 
@@ -3926,6 +4410,96 @@ async function ensureInboundMondayCaller(call) {
     if (inboundMondayCallerPromises.get(callId) === pending) {
       inboundMondayCallerPromises.delete(callId);
     }
+  }
+}
+
+async function persistCallSessionToMonday(callId, options = {}) {
+  const normalizedCallId = cleanText(callId, 100);
+  if (!normalizedCallId) {
+    return { success: false, error: "A call ID is required." };
+  }
+  if (!INBOUND_MONDAY_CONNECTED) {
+    return {
+      success: false,
+      configured: false,
+      error: "Inbound monday.com is not configured."
+    };
+  }
+  const persisted = await persistLatestSession({
+    callId: normalizedCallId,
+    queue: inboundSessionPersistenceQueue,
+    alreadySerialized: options.alreadySerialized === true,
+    loadSession: getCallById,
+    ensureItem: ensureInboundMondayCaller,
+    buildPayload: async (call) => {
+      const payload = inboundCallSnapshot(call, options.overrides || {});
+      const diagnostic = inboundMondayDiagnosticContext(normalizedCallId);
+      if (diagnostic) {
+        inboundLog("[MONDAY_DIAGNOSTIC]", "session_snapshot", {
+          ...diagnostic,
+          twilio_call_sid: call.twilio_call_sid || null,
+          monday_item_id: String(call.monday_item_id),
+          board_id: MONDAY_BOARD_ID,
+          session: sanitizeMondayDiagnostic(call.result || {}),
+          normalized_fields: sanitizeMondayDiagnostic(payload)
+        });
+      }
+      return payload;
+    },
+    updateItem: async (_itemId, payload, call) => {
+      const updated = await updateInboundCallerFromSession(call, payload, {
+        maxAttempts: options.maxAttempts || 3,
+        forceFullState: options.forceFullState === true
+      });
+      if (!updated?.id) {
+        throw new Error("monday.com did not confirm the session update.");
+      }
+      return updated;
+    }
+  });
+  return {
+    success: true,
+    call_id: normalizedCallId,
+    monday_item_id: persisted.itemId,
+    payload: persisted.payload,
+    skipped: persisted.result?.skipped === true
+  };
+}
+
+function isInboundCallSession(call) {
+  return Boolean(
+    call &&
+      (call.direction === "inbound" || call.payload?.direction === "inbound")
+  );
+}
+
+async function persistInboundMilestone(call, event, overrides = {}) {
+  if (
+    !INBOUND_MONDAY_CONNECTED ||
+    !isInboundCallSession(call)
+  ) {
+    return false;
+  }
+  try {
+    const persisted = await persistCallSessionToMonday(call.call_id, {
+      forceFullState: true,
+      maxAttempts: 3,
+      overrides
+    });
+    inboundLog("[MONDAY]", "inbound_milestone_persisted", {
+      call_id: call.call_id,
+      event,
+      monday_item_id: persisted?.monday_item_id || null,
+      success: persisted?.success === true
+    });
+    return persisted?.success === true;
+  } catch (error) {
+    inboundLog("[MONDAY_ERROR]", "inbound_milestone_failed", {
+      call_id: call.call_id,
+      event,
+      error: cleanText(error.message, 500)
+    });
+    return false;
   }
 }
 
@@ -6248,6 +6822,15 @@ const INBOUND_TOOL_NAMES = new Set([
 ]);
 
 async function executeInboundTool(call, name, args) {
+  const callId = cleanText(call?.call_id, 100);
+  if (!callId) return { success: false, error: "The call session is unavailable." };
+  return inboundSessionPersistenceQueue.run(callId, async () => {
+    const latestCall = (await getCallById(callId)) || call;
+    return executeInboundToolUnlocked(latestCall, name, args);
+  });
+}
+
+async function executeInboundToolUnlocked(call, name, args) {
   const safeArgs = args && typeof args === "object" ? args : {};
 
   if (name === "save_inbound_caller_context") {
@@ -6259,7 +6842,7 @@ async function executeInboundTool(call, name, args) {
     const intentChangeConfirmed = safeArgs.intent_change_confirmed === true;
     const intent = savedIntent && !intentChangeConfirmed
       ? savedIntent
-      : suppliedIntent || savedIntent || "OTHER";
+      : suppliedIntent || savedIntent || null;
     const suppliedPhone = cleanText(safeArgs.phone_number, 100);
     const phoneNumber = suppliedPhone ? normalizePhone(suppliedPhone) : null;
     if (suppliedPhone && !phoneNumber) {
@@ -6315,7 +6898,9 @@ async function executeInboundTool(call, name, args) {
           : null),
       160
     );
-    const creditScore = cleanText(safeArgs.estimated_credit_score, 100);
+    const creditScore = normalizeInboundCreditScore(
+      safeArgs.estimated_credit_score
+    );
     const taxReturnStatus = normalizeInboundTaxReturnStatus(
       safeArgs.two_year_tax_filing_status
     );
@@ -6339,7 +6924,7 @@ async function executeInboundTool(call, name, args) {
       readiness_application_started: safeArgs.readiness_application_started,
       readiness_application_completed: safeArgs.readiness_application_completed,
       application_status: cleanText(safeArgs.application_status, 500),
-      call_summary: cleanText(safeArgs.call_summary, 4000),
+      call_summary: usefulInboundSummary(safeArgs.call_summary),
       call_outcome: cleanText(safeArgs.call_outcome, 100),
       date_called: call.started_at || call.created_at ||
         new Date().toISOString().slice(0, 10),
@@ -6355,7 +6940,10 @@ async function executeInboundTool(call, name, args) {
     );
     const currentResult = call.result || {};
     const resultPatch = Object.fromEntries(
-      Object.entries({ ...savedFields, inbound_intent: intent }).filter(
+      Object.entries({
+        ...savedFields,
+        ...(intent ? { inbound_intent: intent } : {})
+      }).filter(
         ([field, value]) =>
           !inboundSessionFieldEqual(field, currentResult[field], value)
       )
@@ -6364,7 +6952,7 @@ async function executeInboundTool(call, name, args) {
     const payloadCandidates = {
       phone_number: savedFields.phone_number,
       lead_source: savedFields.lead_source,
-      inbound_intent: intent
+      ...(intent ? { inbound_intent: intent } : {})
     };
     const payloadPatch = Object.fromEntries(
       Object.entries(payloadCandidates).filter(
@@ -6379,45 +6967,42 @@ async function executeInboundTool(call, name, args) {
       Object.keys(resultPatch).length > 0 ||
       Object.keys(payloadPatch).length > 0 ||
       (phoneNumber && normalizePhone(call.phone) !== phoneNumber);
-    await pool.query(
-      `UPDATE ai_calls SET intent = $2, phone = COALESCE($3, phone),
-       payload = payload || $4::jsonb, result = result || $5::jsonb,
-       summary = COALESCE($6, summary), outcome = COALESCE($7, outcome),
-       updated_at = NOW() WHERE call_id = $1`,
-      [
-        call.call_id,
-        intent,
-        phoneNumber,
-        JSON.stringify(payloadPatch),
-        JSON.stringify(resultPatch),
-        savedFields.call_summary || null,
-        savedFields.call_outcome || null
-      ]
-    );
-    let updatedCall = (await getCallById(call.call_id)) || call;
-    const hadMondayItem = Boolean(updatedCall.monday_item_id);
-    if (!updatedCall.monday_item_id && INBOUND_MONDAY_CONNECTED) {
-      await ensureInboundMondayCaller(updatedCall);
-      updatedCall = (await getCallById(call.call_id)) || updatedCall;
+    if (stateChanged) {
+      await pool.query(
+        `UPDATE ai_calls SET intent = COALESCE($2, intent),
+         phone = COALESCE($3, phone),
+         payload = payload || $4::jsonb, result = result || $5::jsonb,
+         summary = COALESCE($6, summary), outcome = COALESCE($7, outcome),
+         updated_at = NOW() WHERE call_id = $1`,
+        [
+          call.call_id,
+          intent,
+          phoneNumber,
+          JSON.stringify(payloadPatch),
+          JSON.stringify(resultPatch),
+          savedFields.call_summary || null,
+          savedFields.call_outcome || null
+        ]
+      );
     }
-    const mondayData = inboundCallSnapshot(updatedCall, {
-      credit_score: savedFields.credit_score,
-      tax_return_status: savedFields.tax_return_status,
-      summary: savedFields.call_summary,
-      call_status: savedFields.call_outcome,
-      caller_type: "Inbound Call",
-      lead_source: savedFields.lead_source,
-      phone: phoneNumber
-    });
-    if (
-      hadMondayItem &&
-      stateChanged &&
-      updatedCall.monday_item_id &&
-      INBOUND_MONDAY_CONNECTED
-    ) {
+    let mondayPersisted = !INBOUND_MONDAY_CONNECTED;
+    if (INBOUND_MONDAY_CONNECTED) {
       try {
-        await updateInboundCallerItem(updatedCall.monday_item_id, mondayData);
+        const persisted = await persistCallSessionToMonday(call.call_id, {
+          alreadySerialized: true,
+          overrides: {
+            credit_score: savedFields.credit_score,
+            tax_return_status: savedFields.tax_return_status,
+            summary: savedFields.call_summary,
+            call_status: savedFields.call_outcome,
+            caller_type: "Inbound Call",
+            lead_source: savedFields.lead_source,
+            phone: phoneNumber
+          }
+        });
+        mondayPersisted = persisted?.success === true;
         if (intent === "EXISTING_APPLICATION_FOLLOWUP") {
+          const updatedCall = (await getCallById(call.call_id)) || call;
           await moveInboundCallerToGroup(
             updatedCall.monday_item_id,
             INBOUND_MONDAY.groups.existingApplicantFollowUp
@@ -6435,23 +7020,46 @@ async function executeInboundTool(call, name, args) {
       intent,
       saved_fields: Object.keys(resultPatch),
       state_changed: stateChanged,
+      monday_persisted: mondayPersisted,
       caller_phone_available: Boolean(phoneNumber || normalizePhone(call.phone)),
       estimated_five_percent_assistance: estimatedFivePercentAssistance
     };
   }
 
   if (name === "lookup_existing_outbound_applicant") {
-    const firstName = cleanText(
-      safeArgs.first_name || call.result?.first_name,
+    const recognizedEmail = normalizeInboundEmail(safeArgs.email);
+    const recognizedFirstName = cleanInboundContactValue(
+      safeArgs.first_name,
       100
     );
-    const lastName = cleanText(
-      safeArgs.last_name || call.result?.last_name,
+    const recognizedLastName = cleanInboundContactValue(
+      safeArgs.last_name,
+      100
+    );
+    if (recognizedEmail || recognizedFirstName || recognizedLastName) {
+      const savedContact = await executeInboundToolUnlocked(
+        call,
+        "save_inbound_caller_context",
+        {
+          email: recognizedEmail,
+          first_name: recognizedFirstName,
+          last_name: recognizedLastName
+        }
+      );
+      if (savedContact?.success !== true) return savedContact;
+      call = (await getCallById(call.call_id)) || call;
+    }
+    const firstName = cleanInboundContactValue(
+      call.result?.first_name,
+      100
+    );
+    const lastName = cleanInboundContactValue(
+      call.result?.last_name,
       100
     );
     const result = await lookupExistingOutboundApplicant({
       phone: call.phone,
-      email: safeArgs.email || call.result?.email,
+      email: normalizeInboundEmail(call.result?.email),
       name: [firstName, lastName].filter(Boolean).join(" ") ||
         call.result?.full_name
     });
@@ -6474,7 +7082,8 @@ async function executeInboundTool(call, name, args) {
       return { success: false, error: "The follow-up reason must be readiness_application." };
     }
     const followUpDeclined = safeArgs.follow_up_declined === true;
-    const followUpDate = cleanText(safeArgs.follow_up_date, 10);
+    const suppliedFollowUpDate = cleanText(safeArgs.follow_up_date, 20);
+    const followUpDate = normalizeInboundLocalDate(suppliedFollowUpDate);
     const followUpTime = cleanText(safeArgs.follow_up_time, 20);
     const followUpTimezoneInput = cleanText(safeArgs.follow_up_timezone, 100);
     const followUpTimezoneAliases = {
@@ -6522,7 +7131,7 @@ async function executeInboundTool(call, name, args) {
         };
       }
     }
-    const callSummary = cleanText(safeArgs.call_summary, 4000);
+    const callSummary = usefulInboundSummary(safeArgs.call_summary);
     const callOutcome = followUpDeclined
       ? "new_lead_follow_up_declined"
       : "new_lead_follow_up_scheduled";
@@ -6534,55 +7143,93 @@ async function executeInboundTool(call, name, args) {
       follow_up_declined: followUpDeclined,
       follow_up_at: nextFollowUp
     };
-    await pool.query(
-      `UPDATE ai_calls SET outcome = $2, priority = 'normal',
-       next_action = $3, summary = COALESCE($4, summary),
-       result = result || $5::jsonb, updated_at = NOW()
-       WHERE call_id = $1`,
-      [
-        call.call_id,
-        callOutcome,
-        followUpDeclined
-          ? "Caller declined readiness-application follow-up"
-          : `Readiness-application follow-up scheduled for ${nextFollowUp}`,
-        callSummary,
-        JSON.stringify({
-          inbound_follow_up: followUpRecord,
-          ...followUpRecord,
-          next_follow_up: nextFollowUp,
-          next_follow_up_date: followUpDeclined ? null : followUpDate,
-          follow_up_needed: followUpDeclined ? "No" : "Yes",
-          call_outcome: callOutcome,
-          call_status: callOutcome,
-          ...(callSummary ? { call_summary: callSummary } : {})
-        })
-      ]
+    const existingFollowUp = call.result?.inbound_follow_up || null;
+    const followUpStateChanged = !inboundValuesEqual(
+      existingFollowUp,
+      followUpRecord
     );
-    await appendAction(call.call_id, {
-      action: name,
-      success: true,
-      ...followUpRecord
-    });
-    let followUpItem = null;
-    let updatedCall = (await getCallById(call.call_id)) || call;
-    if (!updatedCall.monday_item_id && INBOUND_MONDAY_CONNECTED) {
-      await ensureInboundMondayCaller(updatedCall);
-      updatedCall = (await getCallById(call.call_id)) || updatedCall;
+    const followUpSessionChanged =
+      followUpStateChanged ||
+      call.result?.call_outcome !== callOutcome ||
+      (callSummary &&
+        !inboundSessionFieldEqual(
+          "call_summary",
+          call.result?.call_summary,
+          callSummary
+        ));
+    if (followUpSessionChanged) {
+      await pool.query(
+        `UPDATE ai_calls SET outcome = $2, priority = 'normal',
+         next_action = $3, summary = COALESCE($4, summary),
+         result = result || $5::jsonb, updated_at = NOW()
+         WHERE call_id = $1`,
+        [
+          call.call_id,
+          callOutcome,
+          followUpDeclined
+            ? "Caller declined readiness-application follow-up"
+            : `Readiness-application follow-up scheduled for ${nextFollowUp}`,
+          callSummary,
+          JSON.stringify({
+            inbound_follow_up: followUpRecord,
+            ...followUpRecord,
+            next_follow_up: nextFollowUp,
+            next_follow_up_date: followUpDeclined ? null : followUpDate,
+            follow_up_needed: followUpDeclined ? "No" : "Yes",
+            call_outcome: callOutcome,
+            call_status: callOutcome,
+            ...(callSummary ? { call_summary: callSummary } : {})
+          })
+        ]
+      );
+      await appendAction(call.call_id, {
+        action: name,
+        success: true,
+        ...followUpRecord
+      });
     }
-    if (updatedCall.monday_item_id && INBOUND_MONDAY_CONNECTED) {
+    const existingFollowUpItemId = cleanText(
+      call.result?.inbound_follow_up_item_id,
+      100
+    );
+    let followUpItem = existingFollowUpItemId
+      ? { id: existingFollowUpItemId }
+      : null;
+    let updatedCall = followUpSessionChanged
+      ? (await getCallById(call.call_id)) || call
+      : call;
+    let mondayPersisted = !INBOUND_MONDAY_CONNECTED;
+    if (INBOUND_MONDAY_CONNECTED) {
       try {
-        await updateInboundCallerItem(updatedCall.monday_item_id, inboundCallSnapshot(updatedCall, {
-          inbound_status: followUpDeclined ? "Follow-Up Declined" : "Follow-Up Scheduled",
-          follow_up_needed: followUpDeclined ? "No" : "Yes",
-          next_follow_up: followUpDeclined ? null : followUpDate,
-          summary: callSummary,
-          call_status: callOutcome
-        }));
-        if (!followUpDeclined) {
-          followUpItem = await createInboundFollowUpRecord(
-            updatedCall.monday_item_id,
-            `Readiness application at ${nextFollowUp}`
+        const persisted = await persistCallSessionToMonday(call.call_id, {
+          alreadySerialized: true,
+          overrides: {
+            inbound_status: followUpDeclined ? "Follow-Up Declined" : "Follow-Up Scheduled",
+            follow_up_needed: followUpDeclined ? "No" : "Yes",
+            next_follow_up: followUpDeclined ? null : followUpDate,
+            follow_up_time: followUpDeclined ? null : followUpTime,
+            follow_up_timezone: followUpDeclined ? null : followUpTimezone,
+            follow_up_at: followUpDeclined ? null : nextFollowUp,
+            summary: callSummary,
+            call_status: callOutcome
+          }
+        });
+        mondayPersisted = persisted?.success === true;
+        updatedCall = (await getCallById(call.call_id)) || updatedCall;
+        if (!followUpDeclined && !followUpItem) {
+          followUpItem = await retryTransientOperation(
+            () =>
+              createInboundFollowUpRecord(
+                updatedCall.monday_item_id,
+                `Readiness application at ${nextFollowUp}`
+              ),
+            { maxAttempts: 3 }
           );
+          if (followUpItem?.id) {
+            await mergeCallResult(call.call_id, {
+              inbound_follow_up_item_id: String(followUpItem.id)
+            });
+          }
         }
       } catch (error) {
         inboundLog("[MONDAY]", "follow_up_update_failed", {
@@ -6600,7 +7247,8 @@ async function executeInboundTool(call, name, args) {
       follow_up_time: followUpRecord.follow_up_time,
       follow_up_timezone: followUpRecord.follow_up_timezone,
       next_follow_up: nextFollowUp,
-      call_outcome: callOutcome
+      call_outcome: callOutcome,
+      monday_persisted: mondayPersisted
     };
   }
 
@@ -6626,13 +7274,20 @@ async function executeInboundTool(call, name, args) {
       success: true,
       priority
     });
-    if (call.monday_item_id && INBOUND_MONDAY_CONNECTED) {
+    let mondayPersisted = !INBOUND_MONDAY_CONNECTED;
+    if (INBOUND_MONDAY_CONNECTED) {
       try {
-        await updateInboundCallerItem(call.monday_item_id, {
-          inbound_status: "Transferred to Outbound",
-          follow_up_needed: "Yes",
-          priority
+        const persisted = await persistCallSessionToMonday(call.call_id, {
+          alreadySerialized: true,
+          forceFullState: true,
+          overrides: {
+            inbound_status: "Transferred to Outbound",
+            follow_up_needed: "Yes",
+            priority
+          }
         });
+        mondayPersisted = persisted?.success === true;
+        call = (await getCallById(call.call_id)) || call;
         await moveInboundCallerToGroup(
           call.monday_item_id,
           INBOUND_MONDAY.groups.transferredToOutbound
@@ -6648,7 +7303,8 @@ async function executeInboundTool(call, name, args) {
       success: true,
       transferred_to_outbound: true,
       outbound_call_placed: false,
-      priority
+      priority,
+      monday_persisted: mondayPersisted
     };
   }
 
@@ -6711,7 +7367,22 @@ async function executeDougTool(call, name, args, sessionCallPhase) {
         input: { ...safeArgs, source_call_id: call.call_id }
       });
       queueMondaySync(call.call_id, "confirmed_appointment_created");
-      return appointment;
+      const mondayPersisted = await persistInboundMilestone(
+        call,
+        "confirmed_appointment",
+        {
+          next_follow_up: safeArgs.customer_local_date,
+          follow_up_time: safeArgs.customer_local_time,
+          follow_up_timezone: safeArgs.timezone,
+          follow_up_at: safeArgs.callback_at,
+          appointment_type: safeArgs.callback_type,
+          follow_up_needed: "Yes"
+        }
+      );
+      return {
+        ...appointment,
+        ...(isInboundCallSession(call) ? { monday_persisted: mondayPersisted } : {})
+      };
     } catch (error) {
       if (error instanceof SchedulingError) {
         return { success: false, error: error.message, error_code: error.code };
@@ -6968,12 +7639,24 @@ async function executeDougTool(call, name, args, sessionCallPhase) {
 
     await appendAction(call.call_id, { action: name, success: true, ...handoff });
     queueMondaySync(call.call_id, "specialist_handoff");
+    const mondayPersisted = await persistInboundMilestone(
+      call,
+      "specialist_handoff",
+      {
+        inbound_status: "Transferred to Outbound",
+        follow_up_needed: "Yes",
+        priority: handoff.priority,
+        summary: handoff.summary,
+        call_status: "specialist_handoff"
+      }
+    );
 
     return {
       success: true,
       handoff_status: "created",
       priority: handoff.priority,
-      next_action: "DPA specialist follow-up"
+      next_action: "DPA specialist follow-up",
+      ...(isInboundCallSession(call) ? { monday_persisted: mondayPersisted } : {})
     };
   }
 
@@ -7038,7 +7721,21 @@ async function executeDougTool(call, name, args, sessionCallPhase) {
       });
 
       queueMondaySync(call.call_id, "hot_transfer");
-      return { success: true, transfer_status: "initiated" };
+      const mondayPersisted = await persistInboundMilestone(
+        call,
+        "hot_transfer",
+        {
+          inbound_status: "Transferred to Outbound",
+          follow_up_needed: "Yes",
+          priority: cleanText(safeArgs.priority, 30) || "high",
+          call_status: "hot_transfer"
+        }
+      );
+      return {
+        success: true,
+        transfer_status: "initiated",
+        ...(isInboundCallSession(call) ? { monday_persisted: mondayPersisted } : {})
+      };
     } catch (error) {
       await appendAction(call.call_id, {
         action: name,
@@ -7132,7 +7829,12 @@ async function executeDougTool(call, name, args, sessionCallPhase) {
   if (name === "complete_call") {
     const outcome = cleanText(safeArgs.outcome, 80) || "disconnected";
     const nextAction = cleanText(safeArgs.next_action, 2000);
-    const summary = cleanText(safeArgs.summary, 4000);
+    const suppliedSummary = cleanText(safeArgs.summary, 4000);
+    const inboundCall =
+      call.direction === "inbound" || call.payload?.direction === "inbound";
+    const summary = inboundCall
+      ? bestInboundDetailedSummary(call, suppliedSummary) || suppliedSummary
+      : suppliedSummary;
     const stopSequence = safeArgs.stop_sequence === true;
     const pauseSequence = safeArgs.pause_sequence === true;
     const completionValidation = terminalCompletionValidation(
@@ -7708,12 +8410,12 @@ app.post("/api/v1/twilio/inbound", async (req, res, next) => {
       const result = await pool.query(
         `INSERT INTO ai_calls (
           call_id, request_key, phone, status, sequence_status, stream_token,
-          twilio_call_sid, payload, direction, timezone, consent_status,
+          twilio_call_sid, payload, result, direction, timezone, consent_status,
           agent_version, prompt_version, tool_version, knowledge_version,
           routing_version, started_at, answered_at
         ) VALUES (
-          $1, $2, $3, 'answered', 'active', $4, $5, $6::jsonb,
-          'inbound', $7, 'unverified', $8, $9, $10, $11, $12, NOW(), NOW()
+          $1, $2, $3, 'answered', 'active', $4, $5, $6::jsonb, $7::jsonb,
+          'inbound', $8, 'unverified', $9, $10, $11, $12, $13, NOW(), NOW()
         ) RETURNING *`,
         [
           callId,
@@ -7722,6 +8424,16 @@ app.post("/api/v1/twilio/inbound", async (req, res, next) => {
           streamToken,
           twilioCallSid,
           JSON.stringify(payload),
+          JSON.stringify({
+            phone: callerPhone,
+            phone_number: callerPhone,
+            date_called: new Date().toISOString().slice(0, 10),
+            caller_type: "Inbound Call",
+            call_direction: "inbound",
+            call_status: "answered",
+            call_started_at: new Date().toISOString(),
+            call_sid: twilioCallSid
+          }),
           DEFAULT_TIMEZONE,
           DOUG_CONFIG.agentVersion,
           DOUG_CONFIG.promptVersion,
@@ -7736,7 +8448,7 @@ app.post("/api/v1/twilio/inbound", async (req, res, next) => {
         caller_phone: maskedPhoneLastFour(callerPhone),
         twilio_call_sid: twilioCallSid
       });
-      void ensureInboundMondayCaller(call);
+      await ensureInboundMondayCaller(call);
     }
 
     const response = new twilio.twiml.VoiceResponse();
@@ -7918,7 +8630,7 @@ app.post("/api/v1/twilio/status", async (req, res, next) => {
         (finalCall.direction === "inbound" ||
           finalCall.payload?.direction === "inbound")
       ) {
-        await saveInboundCallSummary({
+        await persistFinalInboundSession({
           call_id: finalCall.call_id,
           intent: finalCall.intent || finalCall.result?.inbound_intent,
           outcome: finalCall.outcome || status,
@@ -7926,7 +8638,11 @@ app.post("/api/v1/twilio/status", async (req, res, next) => {
           call_status: status,
           inbound_status: "Closed",
           date_called: finalCall.started_at || finalCall.created_at,
-          completion_status: status
+          completion_status: status,
+          disconnect_reason:
+            status === "completed"
+              ? finalCall.result?.disconnect_reason
+              : status
         });
         finalCall = (await getCallById(call.call_id)) || finalCall;
       }
@@ -7957,6 +8673,7 @@ mediaServer.on("connection", (twilioSocket) => {
   let activeResponsePreservesQuestion = false;
   let assistantResponseFinished = true;
   let normalCompletionRecorded = false;
+  let normalCompletionPersistenceInProgress = false;
   let normalEndRequested = false;
   let sessionCallPhase = "";
   let finalClosingRequested = false;
@@ -7993,6 +8710,7 @@ mediaServer.on("connection", (twilioSocket) => {
   let lastWaitingPromptKind = null;
   let suspendedQuestionState = null;
   let complianceRecoveryActive = false;
+  let disconnectPersistencePromise = null;
   const handledToolCalls = new Set();
   const handledUserTurns = new Set();
   const pendingMarkNames = new Set();
@@ -8037,6 +8755,35 @@ mediaServer.on("connection", (twilioSocket) => {
     const currentIntent = savedInboundIntent(call);
     if (!currentIntent || currentIntent === previousIntent) return false;
     return refreshActiveRealtimeInstructions();
+  }
+
+  function persistBeforeInboundMediaRelease(reason) {
+    if (!call) return Promise.resolve(null);
+    if (disconnectPersistencePromise) return disconnectPersistencePromise;
+    disconnectPersistencePromise = (async () => {
+      await mergeCallResult(call.call_id, {
+        call_status: "disconnected",
+        disconnect_reason: reason,
+        disconnected_at: new Date().toISOString()
+      });
+      const finalCall = (await getCallById(call.call_id)) || call;
+      const persisted = await persistFinalInboundSession({
+        call_id: finalCall.call_id,
+        intent: finalCall.intent || finalCall.result?.inbound_intent,
+        outcome: finalCall.outcome,
+        next_action: finalCall.next_action,
+        call_status: "disconnected",
+        date_called: finalCall.started_at || finalCall.created_at,
+        completion_status: "disconnected"
+      });
+      call = (await getCallById(call.call_id)) || persisted || call;
+      inboundLog("[INBOUND]", "media_session_release_ready", {
+        call_id: call.call_id,
+        reason
+      });
+      return call;
+    })();
+    return disconnectPersistencePromise;
   }
 
   function currentCallIsTerminal() {
@@ -8768,9 +9515,9 @@ return true;
     const terminalActionSucceeded = completeCallSucceeded;
 
     if (terminalActionSucceeded) {
-      beginNormalCallTermination(name);
-      normalCompletionRecorded = true;
-      await pool.query(
+      normalCompletionPersistenceInProgress = true;
+      try {
+        await pool.query(
         `
           UPDATE ai_calls
           SET current_state = CASE
@@ -8825,7 +9572,7 @@ return true;
       const inboundIntent = call.intent || call.result?.inbound_intent;
       const finalInboundOutcome = call.result?.call_outcome || call.outcome;
       try {
-        await saveInboundCallSummary({
+        await persistFinalInboundSession({
           call_id: call.call_id,
           intent: inboundIntent,
           outcome: finalInboundOutcome,
@@ -8856,6 +9603,11 @@ return true;
           call_id: call.call_id,
           error: cleanText(error.message, 300)
         });
+      }
+        beginNormalCallTermination(name);
+        normalCompletionRecorded = true;
+      } finally {
+        normalCompletionPersistenceInProgress = false;
       }
     }
 
@@ -9440,9 +10192,19 @@ return true;
           !finalClosingRequested &&
           !finalPlaybackMarkName &&
           !finalHangupInProgress &&
+          !normalCompletionPersistenceInProgress &&
           !normalCompletionRecorded &&
           !finalHangupCompleted
         ) {
+          try {
+            await persistBeforeInboundMediaRelease("twilio_media_stop");
+          } catch (error) {
+            inboundLog("[INBOUND]", "media_disconnect_persistence_failed", {
+              call_id: call.call_id,
+              reason: "twilio_media_stop",
+              error: cleanText(error.message, 300)
+            });
+          }
           void reconnectAfterUnexpectedDisconnect(call.call_id).catch((error) => {
             console.error("Failed to reconnect after disconnect:", error);
           });
@@ -9471,7 +10233,7 @@ return true;
     }
   });
 
-  twilioSocket.on("close", () => {
+  twilioSocket.on("close", async () => {
     closed = true;
     cancelSilenceReminder();
     if (customerTranscriptDebounceTimer) {
@@ -9484,9 +10246,19 @@ return true;
       !finalClosingRequested &&
       !finalPlaybackMarkName &&
       !finalHangupInProgress &&
+      !normalCompletionPersistenceInProgress &&
       !normalCompletionRecorded &&
       !finalHangupCompleted
     ) {
+      try {
+        await persistBeforeInboundMediaRelease("twilio_socket_close");
+      } catch (error) {
+        inboundLog("[INBOUND]", "media_disconnect_persistence_failed", {
+          call_id: call.call_id,
+          reason: "twilio_socket_close",
+          error: cleanText(error.message, 300)
+        });
+      }
       void reconnectAfterUnexpectedDisconnect(call.call_id).catch((error) => {
         console.error("Failed to reconnect after disconnect:", error);
       });
@@ -9596,7 +10368,12 @@ async function shutdown() {
   mondaySyncTimers.clear();
 
   server.close(async () => {
-    await Promise.allSettled([...mondaySyncChains.values()]);
+    await Promise.allSettled([
+      ...mondaySyncChains.values(),
+      ...inboundMondayCallerPromises.values(),
+      ...inboundFinalPersistenceChains.values(),
+      ...inboundSessionPersistenceQueue.values()
+    ]);
     await pool.end();
     process.exit(0);
   });
@@ -9611,5 +10388,7 @@ process.on("uncaughtException", (error) => {
   console.error("Uncaught exception:", error);
 });
 
-start();
+if (require.main === module) {
+  start();
+}
 
