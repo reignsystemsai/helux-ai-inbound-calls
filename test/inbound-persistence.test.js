@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  buildInboundMondayUpdateValues,
   KeyedSerialQueue,
   mergeNonBlankState,
   mondayDateValue,
@@ -220,4 +221,84 @@ test("a complete inbound session produces every supported final field", async ()
   ]) {
     assert.ok(persisted.payload[field], `${field} should be present`);
   }
+});
+
+test("real inbound mapping uses Monday text, email, status, date, and long-text formats", () => {
+  const columns = {
+    firstName: "text_mm5fx7z9",
+    lastName: "text_mm5ffrc0",
+    email: "email_mm5f7560",
+    creditScore: "text_mm5j48bj",
+    taxReturnStatus: "text_mm5jx81q",
+    summary: "text_mm5fsx2c",
+    callerType: "color_mm5es680",
+    nextFollowUp: "date_mm5ew2hf"
+  };
+  const metadata = {
+    columns: [
+      { id: columns.firstName, type: "text" },
+      { id: columns.lastName, type: "text" },
+      { id: columns.email, type: "email" },
+      { id: columns.creditScore, type: "text" },
+      { id: columns.taxReturnStatus, type: "text" },
+      { id: columns.summary, type: "text" },
+      {
+        id: columns.callerType,
+        type: "color",
+        settings: {
+          labels: [{ id: 7, label: "Inbound Call", index: 0 }]
+        }
+      },
+      { id: columns.nextFollowUp, type: "date" }
+    ]
+  };
+  const values = buildInboundMondayUpdateValues({
+    data: {
+      first_name: "Jane",
+      last_name: "Doe",
+      email: "jane@example.com",
+      credit_score: "690",
+      tax_return_status: "2 Years Filed",
+      summary: "Detailed call summary",
+      caller_type: "Inbound Call",
+      next_follow_up: "2026-08-02",
+      follow_up_time: "09:30"
+    },
+    columns,
+    metadata
+  });
+  assert.deepEqual(values, {
+    text_mm5fx7z9: "Jane",
+    text_mm5ffrc0: "Doe",
+    text_mm5j48bj: "690",
+    text_mm5jx81q: "2 Years Filed",
+    email_mm5f7560: {
+      email: "jane@example.com",
+      text: "jane@example.com"
+    },
+    text_mm5fsx2c: "Detailed call summary",
+    color_mm5es680: { index: 7 },
+    date_mm5ew2hf: {
+      date: "2026-08-02",
+      time: "09:30:00"
+    }
+  });
+  assert.equal(
+    JSON.stringify(values),
+    JSON.stringify(JSON.parse(JSON.stringify(values)))
+  );
+  const longTextValues = buildInboundMondayUpdateValues({
+    data: { summary: "Detailed call summary" },
+    columns,
+    metadata: {
+      columns: metadata.columns.map((column) =>
+        column.id === columns.summary
+          ? { ...column, type: "long_text" }
+          : column
+      )
+    }
+  });
+  assert.deepEqual(longTextValues, {
+    text_mm5fsx2c: { text: "Detailed call summary" }
+  });
 });

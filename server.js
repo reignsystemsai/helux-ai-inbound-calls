@@ -6,6 +6,7 @@ const twilio = require("twilio");
 const WebSocket = require("ws");
 const { WebSocketServer } = WebSocket;
 const {
+  buildInboundMondayUpdateValues,
   KeyedSerialQueue,
   mondayDateValue: buildInboundMondayDateValue,
   normalizeLocalDate,
@@ -3545,7 +3546,17 @@ async function mondayGraphql(query, variables = {}, diagnostic = null) {
     } catch {
       body = { raw_response: cleanText(rawResponseBody, 4000) };
     }
-    if (diagnostic) {
+    if (diagnostic?.always_log_raw_response) {
+      inboundLog("[MONDAY_UPDATE]", "raw_graphql_response", {
+        call_id: diagnostic.call_id || null,
+        monday_item_id: diagnostic.monday_item_id || null,
+        board_id: diagnostic.board_id || MONDAY_BOARD_ID,
+        http_status: response.status,
+        raw_response: cleanText(rawResponseBody, 10000),
+        graphql_errors: Array.isArray(body.errors) ? body.errors : []
+      });
+    }
+    if (diagnostic && !diagnostic.update_logging_only) {
       inboundLog("[MONDAY_DIAGNOSTIC]", "raw_api_response", {
         ...diagnostic,
         http_status: response.status,
@@ -3791,10 +3802,31 @@ async function createInboundCallerItem(data = {}, options = {}) {
 async function updateInboundCallerItem(itemId, data = {}, options = {}) {
   if (!itemId) return null;
   const diagnostic = inboundMondayDiagnosticContext(options.callId);
-  const columnValues = await inboundMondayValues(
+  const metadata = await loadInboundMondayMetadata(
+    false,
+    diagnostic ? { ...diagnostic, operation: "board_metadata" } : null
+  );
+  const baseColumnValues = await inboundMondayValues(
     data,
     diagnostic ? { ...diagnostic, operation: "board_metadata" } : null
   );
+  const requiredColumnValues = buildInboundMondayUpdateValues({
+    data,
+    columns: INBOUND_MONDAY.columns,
+    metadata
+  });
+  const columnValues = {
+    ...baseColumnValues,
+    ...requiredColumnValues
+  };
+  const serializedColumnValues = JSON.stringify(columnValues);
+  inboundLog("[MONDAY_UPDATE]", "column_values", {
+    call_id: cleanText(options.callId, 100),
+    monday_item_id: String(itemId),
+    board_id: MONDAY_BOARD_ID,
+    column_values: columnValues,
+    serialized_column_values: serializedColumnValues
+  });
   if (diagnostic) {
     inboundLog("[MONDAY_DIAGNOSTIC]", "update_payload", {
       ...diagnostic,
@@ -3823,11 +3855,23 @@ async function updateInboundCallerItem(itemId, data = {}, options = {}) {
       {
         boardId: MONDAY_BOARD_ID,
         itemId: String(itemId),
-        columnValues: JSON.stringify(columnValues)
+        columnValues: serializedColumnValues
       },
       diagnostic
-        ? { ...diagnostic, operation: "change_multiple_column_values" }
-        : null
+        ? {
+            ...diagnostic,
+            operation: "change_multiple_column_values",
+            always_log_raw_response: true,
+            monday_item_id: String(itemId),
+            board_id: MONDAY_BOARD_ID
+          }
+        : {
+            call_id: cleanText(options.callId, 100),
+            monday_item_id: String(itemId),
+            board_id: MONDAY_BOARD_ID,
+            always_log_raw_response: true,
+            update_logging_only: true
+          }
     );
     updated = result.change_multiple_column_values || updated;
   }

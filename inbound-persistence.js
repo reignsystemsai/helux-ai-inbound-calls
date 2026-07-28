@@ -162,6 +162,110 @@ function mondayDateValue(localDate, localTime) {
   return time ? { date, time } : { date };
 }
 
+function mondayColumnById(metadata, columnId) {
+  return metadata?.columns?.find((column) => column.id === columnId) || null;
+}
+
+function requireMondayColumn(metadata, columnId, expectedTypes) {
+  const column = mondayColumnById(metadata, columnId);
+  if (!column) {
+    throw new Error(`monday.com column ${columnId} was not found on the live board.`);
+  }
+  const type = String(column.type || "").toLowerCase();
+  if (!expectedTypes.includes(type)) {
+    throw new Error(
+      `monday.com column ${columnId} has type ${type || "unknown"}; expected ${expectedTypes.join(" or ")}.`
+    );
+  }
+  return column;
+}
+
+function mondayStatusValue(column, desiredLabel) {
+  const desired = String(desiredLabel || "").trim().toLowerCase();
+  const labels = column?.settings?.labels;
+  const entries = Array.isArray(labels)
+    ? labels.map((entry) => [null, entry])
+    : Object.entries(labels || {});
+  const match = entries.find(([, entry]) => {
+    const label = typeof entry === "string"
+      ? entry
+      : entry?.label || entry?.name;
+    return String(label || "").trim().toLowerCase() === desired;
+  });
+  if (!match) {
+    throw new Error(
+      `monday.com status column ${column?.id || "unknown"} does not contain label ${desiredLabel}.`
+    );
+  }
+  const [key, entry] = match;
+  const id = typeof entry === "object"
+    ? entry?.id ?? entry?.index ?? key
+    : key;
+  const numericId = Number(id);
+  return Number.isInteger(numericId)
+    ? { index: numericId }
+    : { label: typeof entry === "string" ? entry : entry.label || entry.name };
+}
+
+function buildInboundMondayUpdateValues({
+  data = {},
+  columns,
+  metadata
+}) {
+  const values = {};
+  const textFields = [
+    ["first_name", columns.firstName],
+    ["last_name", columns.lastName],
+    ["credit_score", columns.creditScore],
+    ["tax_return_status", columns.taxReturnStatus]
+  ];
+  for (const [field, columnId] of textFields) {
+    if (!meaningfulValue(data[field])) continue;
+    requireMondayColumn(metadata, columnId, ["text"]);
+    values[columnId] = String(data[field]).trim();
+  }
+  if (meaningfulValue(data.email)) {
+    requireMondayColumn(metadata, columns.email, ["email"]);
+    const email = String(data.email).trim();
+    values[columns.email] = { email, text: email };
+  }
+  if (meaningfulValue(data.summary)) {
+    const column = requireMondayColumn(
+      metadata,
+      columns.summary,
+      ["text", "long_text"]
+    );
+    const summary = String(data.summary).trim();
+    values[columns.summary] =
+      String(column.type).toLowerCase() === "long_text"
+        ? { text: summary }
+        : summary;
+  }
+  if (meaningfulValue(data.caller_type)) {
+    const column = requireMondayColumn(
+      metadata,
+      columns.callerType,
+      ["color", "status"]
+    );
+    values[columns.callerType] = mondayStatusValue(
+      column,
+      String(data.caller_type).trim()
+    );
+  }
+  if (meaningfulValue(data.next_follow_up)) {
+    requireMondayColumn(metadata, columns.nextFollowUp, ["date"]);
+    const dateValue = mondayDateValue(
+      data.next_follow_up,
+      data.follow_up_time
+    );
+    if (!dateValue) {
+      throw new Error("The monday.com Next Follow-Up date or time is invalid.");
+    }
+    values[columns.nextFollowUp] = dateValue;
+  }
+  return values;
+}
+
 async function persistLatestSession({
   callId,
   queue,
@@ -195,6 +299,7 @@ async function persistLatestSession({
 
 module.exports = {
   KeyedSerialQueue,
+  buildInboundMondayUpdateValues,
   meaningfulValue,
   mergeNonBlankState,
   mondayDateValue,
