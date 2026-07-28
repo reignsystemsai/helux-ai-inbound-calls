@@ -857,6 +857,7 @@ let mondayMetadataExpiresAt = 0;
 let inboundMondayConnectionHealthy = false;
 const mondaySyncTimers = new Map();
 const mondaySyncChains = new Map();
+const inboundMondayCallerPromises = new Map();
 
 class HttpError extends Error {
   constructor(statusCode, message) {
@@ -1464,10 +1465,7 @@ function buildDaisyInboundInstructions(call) {
   const callerPhone = validE164Phone(call?.phone)
     ? String(call.phone)
     : "not provided";
-  const callerName = cleanText(
-    payload.first_name || payload.customer_name || payload.name,
-    160
-  ) || "not provided";
+  const callerName = inboundCallerFirstName(call) || "not provided";
   const leadSource = cleanText(payload.lead_source, 160) || "not provided";
 
   return DAISY_INBOUND_TEST_SCRIPT
@@ -2783,6 +2781,8 @@ function extractPrimaryQuestion(value) {
 function pendingQuestionType(value) {
   const text = normalizeMondayKey(value);
   if (/speakwith|isthis/.test(text)) return "identity_confirmation";
+  if (/firstandlastname|fullname|yourname/.test(text)) return "caller_name";
+  if (/emailaddress|email/.test(text)) return "caller_email";
   if (/realtor|realestateagent/.test(text)) return "has_realtor";
   if (/lender|preapproved|preapproval/.test(text)) return "applied_with_lender";
   if (/what.*(?:city|area).*purchase|area.*purchase.*home/.test(text)) {
@@ -3211,10 +3211,63 @@ function normalizeInboundTaxReturnStatus(value) {
   return cleaned;
 }
 
+function cleanInboundContactValue(value, maximumLength = 320) {
+  const cleaned = cleanText(value, maximumLength);
+  if (!cleaned) return null;
+  const sentinel = cleaned
+    .toLowerCase()
+    .replace(/[\s{}\[\]()<>"']/g, "");
+  return ["null", "undefined", "unknown", "notprovided", "n/a", "na", "none"]
+    .includes(sentinel)
+    ? null
+    : cleaned;
+}
+
+function firstInboundContactValue(maximumLength, ...values) {
+  for (const value of values) {
+    const cleaned = cleanInboundContactValue(value, maximumLength);
+    if (cleaned) return cleaned;
+  }
+  return null;
+}
+
+function inboundValuesEqual(left, right) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function inboundSessionFieldEqual(field, left, right) {
+  if (["full_name", "first_name", "last_name", "email"].includes(field)) {
+    return normalizeMondayKey(left) === normalizeMondayKey(right);
+  }
+  return inboundValuesEqual(left, right);
+}
+
+function normalizeInboundFullName(value) {
+  const cleaned = cleanInboundContactValue(value, 160);
+  if (!cleaned) return splitFullName("");
+  const withoutIntroduction = cleaned
+    .replace(/^(?:my name is|this is|i am|i'm)\s+/i, "")
+    .replace(/[.!?,;:]+$/g, "")
+    .trim();
+  if (!withoutIntroduction || /[@\d]/.test(withoutIntroduction)) {
+    return splitFullName("");
+  }
+  return splitFullName(withoutIntroduction);
+}
+
+function inboundCallerFirstName(call) {
+  const result = call?.result || {};
+  const direct = firstInboundContactValue(100, result.first_name);
+  if (direct) return normalizeInboundFullName(direct).first_name || direct;
+  return normalizeInboundFullName(result.full_name).first_name || null;
+}
+
 function normalizeInboundEmail(value) {
   const cleaned = cleanText(value, 320);
   if (!cleaned) return null;
   const normalized = cleaned
+    .replace(/[.,;:!?]+$/g, "")
+    .replace(/^(?:my email(?: address)? is|the email(?: address)? is|it is|it's)\s+/i, "")
     .toLowerCase()
     .replace(/\s+at\s+/g, "@")
     .replace(/\s+dot\s+/g, ".")
@@ -3501,35 +3554,32 @@ async function createInboundFollowUpRecord(itemId, reason) {
 function inboundCallSnapshot(call, overrides = {}) {
   const payload = call?.payload || {};
   const result = call?.result || {};
-  const suppliedName = splitFullName(
-    overrides.full_name ||
-      overrides.name ||
-      result.full_name ||
-      payload.full_name ||
-      payload.customer_name ||
-      payload.name ||
-      ""
+  const suppliedName = normalizeInboundFullName(
+    firstInboundContactValue(
+      160,
+      overrides.full_name,
+      overrides.name,
+      result.full_name
+    )
   );
-  const firstName = cleanText(
-    overrides.first_name ||
-      result.first_name ||
-      payload.first_name ||
-      suppliedName.first_name,
-    100
+  const firstName = firstInboundContactValue(
+    100,
+    overrides.first_name,
+    result.first_name,
+    suppliedName.first_name
   );
-  const lastName = cleanText(
-    overrides.last_name ||
-      result.last_name ||
-      payload.last_name ||
-      suppliedName.last_name,
-    100
+  const lastName = firstInboundContactValue(
+    100,
+    overrides.last_name,
+    result.last_name,
+    suppliedName.last_name
   );
-  const fullName = cleanText(
-    overrides.full_name ||
-      result.full_name ||
-      [firstName, lastName].filter(Boolean).join(" ") ||
-      suppliedName.full_name,
-    160
+  const fullName = firstInboundContactValue(
+    160,
+    overrides.full_name,
+    result.full_name,
+    [firstName, lastName].filter(Boolean).join(" "),
+    suppliedName.full_name
   );
   const followUp = result.inbound_follow_up || {};
   const followUpScheduled = Boolean(
@@ -3557,7 +3607,7 @@ function inboundCallSnapshot(call, overrides = {}) {
         result.phone_number || payload.phone_number || payload.caller_phone
     ),
     email: normalizeInboundEmail(
-      overrides.email || result.email || payload.email
+      overrides.email || result.email
     ),
     credit_score: cleanText(
       overrides.credit_score || result.credit_score ||
@@ -3750,7 +3800,7 @@ async function saveInboundCallSummary(data = {}) {
   return call;
 }
 
-async function ensureInboundMondayCaller(call) {
+async function syncInboundMondayCaller(call) {
   if (!call || !INBOUND_MONDAY_CONNECTED) return null;
   try {
     const initialData = inboundCallSnapshot(call, {
@@ -3805,6 +3855,23 @@ async function ensureInboundMondayCaller(call) {
       error: cleanText(error.message, 300)
     });
     return null;
+  }
+}
+
+async function ensureInboundMondayCaller(call) {
+  if (!call || !INBOUND_MONDAY_CONNECTED) return null;
+  const callId = cleanText(call.call_id, 100);
+  if (!callId) return null;
+  const existing = inboundMondayCallerPromises.get(callId);
+  if (existing) return existing;
+  const pending = syncInboundMondayCaller(call);
+  inboundMondayCallerPromises.set(callId, pending);
+  try {
+    return await pending;
+  } finally {
+    if (inboundMondayCallerPromises.get(callId) === pending) {
+      inboundMondayCallerPromises.delete(callId);
+    }
   }
 }
 
@@ -6166,24 +6233,38 @@ async function executeInboundTool(call, name, args) {
       : Number.isFinite(Number(safeArgs.estimated_five_percent_assistance))
         ? Number(safeArgs.estimated_five_percent_assistance)
         : null;
-    const suppliedFullName = cleanText(
+    const suppliedFullName = cleanInboundContactValue(
       safeArgs.full_name ||
         (!safeArgs.last_name && /\s/.test(String(safeArgs.first_name || ""))
           ? safeArgs.first_name
           : ""),
       160
     );
-    const splitName = splitFullName(suppliedFullName);
-    const firstName = cleanText(
+    const splitName = normalizeInboundFullName(suppliedFullName);
+    const firstName = cleanInboundContactValue(
       splitName.first_name || safeArgs.first_name,
       100
     );
-    const lastName = cleanText(
+    const lastName = cleanInboundContactValue(
       splitName.last_name || safeArgs.last_name,
       100
     );
-    const fullName = cleanText(
-      suppliedFullName || [firstName, lastName].filter(Boolean).join(" "),
+    const existingFirstName = cleanInboundContactValue(
+      call.result?.first_name,
+      100
+    );
+    const existingLastName = cleanInboundContactValue(
+      call.result?.last_name,
+      100
+    );
+    const fullName = cleanInboundContactValue(
+      suppliedFullName ||
+        (firstName || lastName
+          ? [
+              firstName || existingFirstName,
+              lastName || existingLastName
+            ].filter(Boolean).join(" ")
+          : null),
       160
     );
     const creditScore = cleanText(safeArgs.estimated_credit_score, 100);
@@ -6224,15 +6305,32 @@ async function executeInboundTool(call, name, args) {
         value !== undefined && value !== null && value !== ""
       )
     );
-    const payloadPatch = {
-      ...Object.fromEntries(
-        ["full_name", "first_name", "last_name", "phone_number", "email", "lead_source"]
-          .filter((field) => savedFields[field] !== undefined)
-          .map((field) => [field, savedFields[field]])
-      ),
+    const currentResult = call.result || {};
+    const resultPatch = Object.fromEntries(
+      Object.entries({ ...savedFields, inbound_intent: intent }).filter(
+        ([field, value]) =>
+          !inboundSessionFieldEqual(field, currentResult[field], value)
+      )
+    );
+    const currentPayload = call.payload || {};
+    const payloadCandidates = {
+      phone_number: savedFields.phone_number,
+      lead_source: savedFields.lead_source,
       inbound_intent: intent
     };
-    const resultPatch = { ...savedFields, inbound_intent: intent };
+    const payloadPatch = Object.fromEntries(
+      Object.entries(payloadCandidates).filter(
+        ([field, value]) =>
+          value !== undefined &&
+          value !== null &&
+          value !== "" &&
+          !inboundValuesEqual(currentPayload[field], value)
+      )
+    );
+    const stateChanged =
+      Object.keys(resultPatch).length > 0 ||
+      Object.keys(payloadPatch).length > 0 ||
+      (phoneNumber && normalizePhone(call.phone) !== phoneNumber);
     await pool.query(
       `UPDATE ai_calls SET intent = $2, phone = COALESCE($3, phone),
        payload = payload || $4::jsonb, result = result || $5::jsonb,
@@ -6249,15 +6347,12 @@ async function executeInboundTool(call, name, args) {
       ]
     );
     let updatedCall = (await getCallById(call.call_id)) || call;
+    const hadMondayItem = Boolean(updatedCall.monday_item_id);
     if (!updatedCall.monday_item_id && INBOUND_MONDAY_CONNECTED) {
       await ensureInboundMondayCaller(updatedCall);
       updatedCall = (await getCallById(call.call_id)) || updatedCall;
     }
     const mondayData = inboundCallSnapshot(updatedCall, {
-      full_name: savedFields.full_name,
-      first_name: savedFields.first_name,
-      last_name: savedFields.last_name,
-      email: savedFields.email,
       credit_score: savedFields.credit_score,
       tax_return_status: savedFields.tax_return_status,
       summary: savedFields.call_summary,
@@ -6266,7 +6361,12 @@ async function executeInboundTool(call, name, args) {
       lead_source: savedFields.lead_source,
       phone: phoneNumber
     });
-    if (updatedCall.monday_item_id && INBOUND_MONDAY_CONNECTED) {
+    if (
+      hadMondayItem &&
+      stateChanged &&
+      updatedCall.monday_item_id &&
+      INBOUND_MONDAY_CONNECTED
+    ) {
       try {
         await updateInboundCallerItem(updatedCall.monday_item_id, mondayData);
         if (intent === "EXISTING_APPLICATION_FOLLOWUP") {
@@ -6285,7 +6385,8 @@ async function executeInboundTool(call, name, args) {
     return {
       success: true,
       intent,
-      saved_fields: Object.keys(savedFields),
+      saved_fields: Object.keys(resultPatch),
+      state_changed: stateChanged,
       caller_phone_available: Boolean(phoneNumber || normalizePhone(call.phone)),
       estimated_five_percent_assistance: estimatedFivePercentAssistance
     };
@@ -6293,17 +6394,18 @@ async function executeInboundTool(call, name, args) {
 
   if (name === "lookup_existing_outbound_applicant") {
     const firstName = cleanText(
-      safeArgs.first_name || call.payload?.first_name,
+      safeArgs.first_name || call.result?.first_name,
       100
     );
     const lastName = cleanText(
-      safeArgs.last_name || call.payload?.last_name,
+      safeArgs.last_name || call.result?.last_name,
       100
     );
     const result = await lookupExistingOutboundApplicant({
       phone: call.phone,
-      email: safeArgs.email || call.payload?.email,
-      name: [firstName, lastName].filter(Boolean).join(" ") || call.payload?.name
+      email: safeArgs.email || call.result?.email,
+      name: [firstName, lastName].filter(Boolean).join(" ") ||
+        call.result?.full_name
     });
     await mergeCallResult(call.call_id, {
       outbound_applicant_lookup: result,
@@ -7893,7 +7995,7 @@ mediaServer.on("connection", (twilioSocket) => {
   }
 
   function exactFinalClosingSpoken(value) {
-    const firstName = cleanText(call?.payload?.first_name, 100);
+    const firstName = inboundCallerFirstName(call);
     const followUpConfirmation = formatInboundFollowUpConfirmation(
       call?.result?.inbound_follow_up
     );
@@ -8200,6 +8302,48 @@ return true;
     if (!awaitingCustomerResponse) {
       requestAssistantResponse({ queueIfBusy: true });
       return;
+    }
+
+    if (pendingQuestionType === "caller_name") {
+      const capturedName = normalizeInboundFullName(transcript);
+      if (capturedName.first_name && capturedName.last_name) {
+        const activeCall = (await getCallById(call.call_id)) || call;
+        const saved = await executeInboundTool(
+          activeCall,
+          "save_inbound_caller_context",
+          {
+            full_name: capturedName.full_name,
+            first_name: capturedName.first_name,
+            last_name: capturedName.last_name
+          }
+        );
+        if (saved?.success !== true) {
+          throw new Error("The caller name could not be persisted.");
+        }
+        call = (await getCallById(call.call_id)) || call;
+        await endLocalWaitingState("caller_name_saved");
+        requestAssistantResponse({ queueIfBusy: true });
+        return;
+      }
+    }
+
+    if (pendingQuestionType === "caller_email") {
+      const capturedEmail = normalizeInboundEmail(transcript);
+      if (capturedEmail) {
+        const activeCall = (await getCallById(call.call_id)) || call;
+        const saved = await executeInboundTool(
+          activeCall,
+          "save_inbound_caller_context",
+          { email: capturedEmail }
+        );
+        if (saved?.success !== true) {
+          throw new Error("The caller email could not be persisted.");
+        }
+        call = (await getCallById(call.call_id)) || call;
+        await endLocalWaitingState("caller_email_saved");
+        requestAssistantResponse({ queueIfBusy: true });
+        return;
+      }
     }
 
     if (pendingQuestionType === "purchase_area") {
@@ -8637,7 +8781,7 @@ return true;
       }
     });
     if (terminalActionSucceeded) {
-      const firstName = cleanText(call.payload?.first_name, 100);
+      const firstName = inboundCallerFirstName(call);
       const followUpConfirmation = formatInboundFollowUpConfirmation(
         call.result?.inbound_follow_up
       );
