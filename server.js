@@ -1245,11 +1245,9 @@ ADDITIVE CONVERSATION STRATEGY V2.0
 
 INTENT ROUTING
 - Use the exact approved opening below.
-- If the caller clearly explains the reason for calling, classify the intent internally and address it directly.
-- Immediately after the caller first explains the reason for calling, respond with no more than one directly relevant approved quoted sentence from this script, then ask the exact CONTACT COLLECTION question.
-- Do not give a long explanation, combine multiple approved responses, list program categories, describe the full readiness process, or add any unscripted language at this point.
-- Unless the caller explicitly asks a follow-up question, the opening intent response must be one sentence only.
-- Save the initial classification with save_inbound_caller_context before continuing contact collection.
+- If the caller clearly explains the reason for calling, classify the intent internally and immediately save the initial classification with save_inbound_caller_context without speaking first.
+- After the initial intent save succeeds, the server will ask the exact CONTACT COLLECTION question. Do not speak before the tool call, repeat the question, add a transition, or generate another response for that step.
+- Never say any sentence beginning with "Before we continue" except the exact CONTACT COLLECTION question, and say that question only once per call.
 - If the caller's reason remains unclear, ask one routing question:
 "To make sure I point you in the right direction, tell me which best describes why you're calling today: you've already started the Readiness Assessment, you'd like to know how to get started, you'd like to know if you qualify or how much assistance may be available, or something else?"
 - Use the answer only to choose the relevant existing path. Do not read the routing choices after the caller has already stated a clear purpose.
@@ -1279,11 +1277,11 @@ OPENING
 Say exactly:
 "Thank you for calling the DPA Help Center. This is Daisy speaking. How can I help you?"
 
-Allow the caller to explain why they are calling. Respond directly to their question or concern before collecting information. Appropriate brief responses include:
+Allow the caller to explain why they are calling. Classify and save the clear initial intent silently before contact collection. Approved brief responses for later direct questions include:
 "Some down payment assistance programs may help with the down payment and possibly some closing costs."
 "Eligibility depends on the specific program and your overall homebuyer-readiness profile."
 
-Use only one of those brief responses after the caller's initial explanation. Do not expand it, paraphrase it, combine it with other response ammunition, or add information that is not written in the script. Then continue directly to CONTACT COLLECTION.
+Do not use those responses before the initial intent-save tool call. Do not expand them, paraphrase them, combine them with other response ammunition, or add information that is not written in the script.
 
 CONTACT COLLECTION
 Then ask exactly:
@@ -9552,6 +9550,12 @@ return true;
       call = (await getCallById(call.call_id)) || call;
       refreshIntentInstructionsIfChanged(previousInboundIntent);
     }
+    const initialInboundIntentJustSaved =
+      name === "save_inbound_caller_context" &&
+      output?.success === true &&
+      !previousInboundIntent &&
+      Boolean(savedInboundIntent(call)) &&
+      !inboundCallerFirstName(call);
 
     const completeCallSucceeded =
       name === "complete_call" &&
@@ -9692,6 +9696,15 @@ return true;
         response: {
           output_modalities: ["audio"],
           instructions: `Say exactly: "${finalClosing}" Then stop speaking. Do not ask a question. Do not wait for another response. Do not call another tool. Do not add any other sentence.`
+        }
+      });
+    } else if (initialInboundIntentJustSaved) {
+      requestAssistantResponse({
+        queueIfBusy: true,
+        response: {
+          output_modalities: ["audio"],
+          instructions:
+            'Say exactly: "Before we continue, may I have your first and last name?" Say nothing else. Do not repeat this question.'
         }
       });
     } else {
