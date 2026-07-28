@@ -4077,8 +4077,8 @@ function inboundCallSnapshot(call, overrides = {}) {
       160
     ),
     next_follow_up: normalizeInboundLocalDate(
-      result.next_follow_up_date || followUp.follow_up_date ||
-        result.callback_local_date || overrides.next_follow_up
+      followUp.follow_up_date || result.next_follow_up_date ||
+        overrides.next_follow_up
     ),
     follow_up_time: normalizeInboundLocalTime(
       result.follow_up_time || followUp.follow_up_time ||
@@ -7214,7 +7214,7 @@ async function executeInboundToolUnlocked(call, name, args) {
           JSON.stringify({
             inbound_follow_up: followUpRecord,
             ...followUpRecord,
-            next_follow_up: nextFollowUp,
+            next_follow_up: followUpDeclined ? null : followUpDate,
             next_follow_up_date: followUpDeclined ? null : followUpDate,
             follow_up_needed: followUpDeclined ? "No" : "Yes",
             call_outcome: callOutcome,
@@ -7287,7 +7287,8 @@ async function executeInboundToolUnlocked(call, name, args) {
       follow_up_date: followUpRecord.follow_up_date,
       follow_up_time: followUpRecord.follow_up_time,
       follow_up_timezone: followUpRecord.follow_up_timezone,
-      next_follow_up: nextFollowUp,
+      next_follow_up: followUpRecord.follow_up_date,
+      follow_up_at: followUpRecord.follow_up_at,
       call_outcome: callOutcome,
       monday_persisted: mondayPersisted
     };
