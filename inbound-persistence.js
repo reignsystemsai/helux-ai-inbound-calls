@@ -166,18 +166,40 @@ function mondayColumnById(metadata, columnId) {
   return metadata?.columns?.find((column) => column.id === columnId) || null;
 }
 
-function requireMondayColumn(metadata, columnId, expectedTypes) {
-  const column = mondayColumnById(metadata, columnId);
-  if (!column) {
-    throw new Error(`monday.com column ${columnId} was not found on the live board.`);
+function mondayColumnTitleKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function requireMondayColumn(
+  metadata,
+  columnId,
+  expectedTypes,
+  expectedTitles = []
+) {
+  const configuredColumn = mondayColumnById(metadata, columnId);
+  if (configuredColumn) {
+    const configuredType = String(configuredColumn.type || "").toLowerCase();
+    if (!expectedTypes.includes(configuredType)) {
+      throw new Error(
+        `monday.com column ${columnId} has type ${configuredType || "unknown"}; expected ${expectedTypes.join(" or ")}.`
+      );
+    }
+    return configuredColumn;
   }
-  const type = String(column.type || "").toLowerCase();
-  if (!expectedTypes.includes(type)) {
+  const titleKeys = expectedTitles.map(mondayColumnTitleKey);
+  const liveColumn = metadata?.columns?.find((column) =>
+    expectedTypes.includes(String(column.type || "").toLowerCase()) &&
+    titleKeys.includes(mondayColumnTitleKey(column.title))
+  );
+  if (!liveColumn) {
     throw new Error(
-      `monday.com column ${columnId} has type ${type || "unknown"}; expected ${expectedTypes.join(" or ")}.`
+      `monday.com column ${columnId} was not found, and no ${expectedTitles.join(" / ")} column with type ${expectedTypes.join(" or ")} exists on the live board.`
     );
   }
-  return column;
+  return liveColumn;
 }
 
 function mondayStatusValue(column, desiredLabel) {
@@ -214,29 +236,39 @@ function buildInboundMondayUpdateValues({
 }) {
   const values = {};
   const textFields = [
-    ["first_name", columns.firstName],
-    ["last_name", columns.lastName],
-    ["credit_score", columns.creditScore],
-    ["tax_return_status", columns.taxReturnStatus]
+    ["first_name", columns.firstName, ["First Name"]],
+    ["last_name", columns.lastName, ["Last Name"]],
+    ["credit_score", columns.creditScore, ["Credit Score"]],
+    [
+      "tax_return_status",
+      columns.taxReturnStatus,
+      ["Tax Return Status", "Tax Returns Status"]
+    ]
   ];
-  for (const [field, columnId] of textFields) {
+  for (const [field, columnId, titles] of textFields) {
     if (!meaningfulValue(data[field])) continue;
-    requireMondayColumn(metadata, columnId, ["text"]);
-    values[columnId] = String(data[field]).trim();
+    const column = requireMondayColumn(metadata, columnId, ["text"], titles);
+    values[column.id] = String(data[field]).trim();
   }
   if (meaningfulValue(data.email)) {
-    requireMondayColumn(metadata, columns.email, ["email"]);
+    const column = requireMondayColumn(
+      metadata,
+      columns.email,
+      ["email"],
+      ["Email", "Email Address"]
+    );
     const email = String(data.email).trim();
-    values[columns.email] = { email, text: email };
+    values[column.id] = { email, text: email };
   }
   if (meaningfulValue(data.summary)) {
     const column = requireMondayColumn(
       metadata,
       columns.summary,
-      ["text", "long_text"]
+      ["text", "long_text"],
+      ["Summary", "Call Summary"]
     );
     const summary = String(data.summary).trim();
-    values[columns.summary] =
+    values[column.id] =
       String(column.type).toLowerCase() === "long_text"
         ? { text: summary }
         : summary;
@@ -245,15 +277,21 @@ function buildInboundMondayUpdateValues({
     const column = requireMondayColumn(
       metadata,
       columns.callerType,
-      ["color", "status"]
+      ["color", "status"],
+      ["Caller Type", "Call Type"]
     );
-    values[columns.callerType] = mondayStatusValue(
+    values[column.id] = mondayStatusValue(
       column,
       String(data.caller_type).trim()
     );
   }
   if (meaningfulValue(data.next_follow_up)) {
-    requireMondayColumn(metadata, columns.nextFollowUp, ["date"]);
+    const column = requireMondayColumn(
+      metadata,
+      columns.nextFollowUp,
+      ["date"],
+      ["Next Follow-Up", "Next Follow Up"]
+    );
     const dateValue = mondayDateValue(
       data.next_follow_up,
       data.follow_up_time
@@ -261,7 +299,7 @@ function buildInboundMondayUpdateValues({
     if (!dateValue) {
       throw new Error("The monday.com Next Follow-Up date or time is invalid.");
     }
-    values[columns.nextFollowUp] = dateValue;
+    values[column.id] = dateValue;
   }
   return values;
 }

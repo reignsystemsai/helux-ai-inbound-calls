@@ -237,7 +237,7 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
   const metadata = {
     columns: [
       { id: columns.firstName, type: "text" },
-      { id: columns.lastName, type: "text" },
+      { id: "text_mm5fsrc0", title: "Last Name", type: "text" },
       { id: columns.email, type: "email" },
       { id: columns.creditScore, type: "text" },
       { id: columns.taxReturnStatus, type: "text" },
@@ -269,7 +269,7 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
   });
   assert.deepEqual(values, {
     text_mm5fx7z9: "Jane",
-    text_mm5ffrc0: "Doe",
+    text_mm5fsrc0: "Doe",
     text_mm5j48bj: "690",
     text_mm5jx81q: "2 Years Filed",
     email_mm5f7560: {
