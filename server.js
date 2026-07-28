@@ -3639,7 +3639,6 @@ async function inboundMondayValues(data = {}, diagnostic = null) {
   const metadata = await loadInboundMondayMetadata(false, diagnostic);
   const values = {};
   const statusFields = [
-    [INBOUND_MONDAY.columns.callerType, data.caller_type],
     [INBOUND_MONDAY.columns.priority, data.priority],
     [INBOUND_MONDAY.columns.inboundStatus, data.inbound_status],
     [INBOUND_MONDAY.columns.followUpNeeded, data.follow_up_needed]
@@ -3661,41 +3660,12 @@ async function inboundMondayValues(data = {}, diagnostic = null) {
     const label = resolveInboundMondayLabel(column, data.call_status);
     if (label) values[INBOUND_MONDAY.columns.callStatus] = { labels: [label] };
   }
-  if (data.first_name) {
-    values[INBOUND_MONDAY.columns.firstName] = cleanText(data.first_name, 100);
-  }
-  if (data.last_name) {
-    values[INBOUND_MONDAY.columns.lastName] = cleanText(data.last_name, 100);
-  }
-  if (data.credit_score) {
-    values[INBOUND_MONDAY.columns.creditScore] = cleanText(data.credit_score, 100);
-  }
-  if (data.tax_return_status) {
-    values[INBOUND_MONDAY.columns.taxReturnStatus] =
-      normalizeInboundTaxReturnStatus(data.tax_return_status);
-  }
-  if (data.email) {
-    const email = cleanText(data.email, 320);
-    values[INBOUND_MONDAY.columns.email] = { email, text: email };
-  }
-  if (data.summary) {
-    values[INBOUND_MONDAY.columns.summary] = cleanText(data.summary, 4000);
-  }
   if (data.date_called) {
     const dateCalled = new Date(data.date_called);
     if (!Number.isNaN(dateCalled.getTime())) {
       values[INBOUND_MONDAY.columns.dateCalled] = {
         date: dateCalled.toISOString().slice(0, 10)
       };
-    }
-  }
-  if (data.next_follow_up) {
-    const followUpValue = buildInboundMondayDateValue(
-      data.next_follow_up,
-      data.follow_up_time
-    );
-    if (followUpValue) {
-      values[INBOUND_MONDAY.columns.nextFollowUp] = followUpValue;
     }
   }
   if (data.phone) {
@@ -3813,7 +3783,23 @@ async function updateInboundCallerItem(itemId, data = {}, options = {}) {
   const requiredColumnValues = buildInboundMondayUpdateValues({
     data,
     columns: INBOUND_MONDAY.columns,
-    metadata
+    metadata,
+    onSkippedColumn: ({
+      field,
+      columnId,
+      desiredValue,
+      reason,
+      availableLabels
+    }) => {
+      inboundLog("[MONDAY_ERROR]", "column_value_skipped", {
+        call_id: cleanText(options.callId, 100),
+        field,
+        column_id: columnId,
+        desired_value: desiredValue,
+        reason,
+        available_labels: availableLabels
+      });
+    }
   });
   const columnValues = {
     ...baseColumnValues,

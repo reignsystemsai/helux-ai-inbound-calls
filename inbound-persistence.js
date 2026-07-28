@@ -215,9 +215,7 @@ function mondayStatusValue(column, desiredLabel) {
     return String(label || "").trim().toLowerCase() === desired;
   });
   if (!match) {
-    throw new Error(
-      `monday.com status column ${column?.id || "unknown"} does not contain label ${desiredLabel}.`
-    );
+    return null;
   }
   const [key, entry] = match;
   const id = typeof entry === "object"
@@ -232,7 +230,8 @@ function mondayStatusValue(column, desiredLabel) {
 function buildInboundMondayUpdateValues({
   data = {},
   columns,
-  metadata
+  metadata,
+  onSkippedColumn = () => undefined
 }) {
   const values = {};
   const textFields = [
@@ -280,10 +279,30 @@ function buildInboundMondayUpdateValues({
       ["color", "status"],
       ["Caller Type", "Call Type"]
     );
-    values[column.id] = mondayStatusValue(
+    const statusValue = mondayStatusValue(
       column,
       String(data.caller_type).trim()
     );
+    if (statusValue) {
+      values[column.id] = statusValue;
+    } else {
+      const labels = column?.settings?.labels;
+      const availableLabels = (Array.isArray(labels)
+        ? labels
+        : Object.values(labels || {})
+      )
+        .map((entry) =>
+          typeof entry === "string" ? entry : entry?.label || entry?.name
+        )
+        .filter(Boolean);
+      onSkippedColumn({
+        field: "caller_type",
+        columnId: column.id,
+        desiredValue: String(data.caller_type).trim(),
+        reason: "status_label_not_found",
+        availableLabels
+      });
+    }
   }
   if (meaningfulValue(data.next_follow_up)) {
     const column = requireMondayColumn(

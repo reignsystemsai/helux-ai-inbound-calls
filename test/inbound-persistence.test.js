@@ -302,3 +302,52 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
     text_mm5fsx2c: { text: "Detailed call summary" }
   });
 });
+
+test("a missing Caller Type label does not block other valid Monday values", () => {
+  const skipped = [];
+  const columns = {
+    firstName: "text_mm5fx7z9",
+    lastName: "text_mm5ffrc0",
+    email: "email_mm5f7560",
+    creditScore: "text_mm5j48bj",
+    taxReturnStatus: "text_mm5jx81q",
+    summary: "text_mm5fsx2c",
+    callerType: "color_mm5es680",
+    nextFollowUp: "date_mm5ew2hf"
+  };
+  const values = buildInboundMondayUpdateValues({
+    data: {
+      first_name: "Jane",
+      last_name: "Doe",
+      caller_type: "Inbound Call",
+      summary: "Detailed call summary"
+    },
+    columns,
+    metadata: {
+      columns: [
+        { id: columns.firstName, title: "First Name", type: "text" },
+        { id: "text_mm5fsrc0", title: "Last Name", type: "text" },
+        { id: columns.summary, title: "Summary", type: "text" },
+        {
+          id: "color_mm5es68d",
+          title: "Caller Type",
+          type: "color",
+          settings: { labels: { 0: "Lead", 1: "Client" } }
+        }
+      ]
+    },
+    onSkippedColumn: (details) => skipped.push(details)
+  });
+  assert.deepEqual(values, {
+    text_mm5fx7z9: "Jane",
+    text_mm5fsrc0: "Doe",
+    text_mm5fsx2c: "Detailed call summary"
+  });
+  assert.deepEqual(skipped, [{
+    field: "caller_type",
+    columnId: "color_mm5es68d",
+    desiredValue: "Inbound Call",
+    reason: "status_label_not_found",
+    availableLabels: ["Lead", "Client"]
+  }]);
+});
