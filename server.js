@@ -1219,6 +1219,7 @@ ADDITIVE CONVERSATION STRATEGY V2.0
 INTENT ROUTING
 - Use the exact approved opening below.
 - If the caller clearly explains the reason for calling, classify the intent internally and address it directly.
+- Save the initial classification with save_inbound_caller_context before continuing contact collection.
 - If the caller's reason remains unclear, ask one routing question:
 "To make sure I point you in the right direction, tell me which best describes why you're calling today: you've already started the Readiness Assessment, you'd like to know how to get started, you'd like to know if you qualify or how much assistance may be available, or something else?"
 - Use the answer only to choose the relevant existing path. Do not read the routing choices after the caller has already stated a clear purpose.
@@ -1460,6 +1461,41 @@ Daisy must never:
 Daisy should answer direct questions briefly, then continue immediately with the next necessary scripted sentence or question.
 `.trim();
 
+const SUPPORTED_INBOUND_INTENTS = Object.freeze([
+  "NEW_DPA_INQUIRY",
+  "EXISTING_APPLICATION_FOLLOWUP",
+  "OTHER"
+]);
+
+function savedInboundIntent(call) {
+  return [
+    call?.intent,
+    call?.result?.inbound_intent,
+    call?.payload?.inbound_intent
+  ]
+    .map((value) => cleanText(value, 80))
+    .find((value) => SUPPORTED_INBOUND_INTENTS.includes(value)) || null;
+}
+
+function inboundIntentStateInstruction(call) {
+  const intent = savedInboundIntent(call);
+  if (!intent) {
+    return [
+      "SESSION INTENT STATE",
+      "The inbound intent is not yet saved.",
+      "Use the existing routing question at most once, and only if the caller's reason remains unclear."
+    ].join("\n");
+  }
+  return [
+    "SESSION INTENT STATE",
+    `The saved inbound intent is ${intent}. Intent discovery is complete.`,
+    "Do not repeat or restate the inbound routing choices after questions, contact collection, tools, interruptions, follow-up scheduling, resumption, or near the closing.",
+    "The routing choices may be repeated only if the caller explicitly asks to hear the options, says they do not understand, says none match, or clearly changes the purpose of the call.",
+    "Only when the caller clearly changes the purpose of the call may you save a different intent, using intent_change_confirmed true.",
+    "Never present the routing choices during the closing."
+  ].join("\n");
+}
+
 function buildDaisyInboundInstructions(call) {
   const payload = call?.payload || {};
   const callerPhone = validE164Phone(call?.phone)
@@ -1468,10 +1504,11 @@ function buildDaisyInboundInstructions(call) {
   const callerName = inboundCallerFirstName(call) || "not provided";
   const leadSource = cleanText(payload.lead_source, 160) || "not provided";
 
-  return DAISY_INBOUND_TEST_SCRIPT
+  const script = DAISY_INBOUND_TEST_SCRIPT
     .replaceAll("{caller_phone}", callerPhone)
     .replaceAll("{caller_name}", callerName)
     .replaceAll("{lead_source}", leadSource);
+  return `${inboundIntentStateInstruction(call)}\n\n${script}`;
 }
 
 const DOUGLAS_DAISY_SCRIPT = String.raw`
@@ -2128,6 +2165,7 @@ const INBOUND_TOOLS = Object.freeze([
         type: "string",
         enum: ["NEW_DPA_INQUIRY", "EXISTING_APPLICATION_FOLLOWUP", "OTHER"]
       },
+      intent_change_confirmed: { type: ["boolean", "null"] },
       full_name: { type: ["string", "null"] },
       first_name: { type: ["string", "null"] },
       last_name: { type: ["string", "null"] },
@@ -2781,6 +2819,9 @@ function extractPrimaryQuestion(value) {
 function pendingQuestionType(value) {
   const text = normalizeMondayKey(value);
   if (/speakwith|isthis/.test(text)) return "identity_confirmation";
+  if (/pointyouintherightdirection|bestdescribeswhyyourecalling/.test(text)) {
+    return "intent_discovery";
+  }
   if (/firstandlastname|fullname|yourname/.test(text)) return "caller_name";
   if (/emailaddress|email/.test(text)) return "caller_email";
   if (/realtor|realestateagent/.test(text)) return "has_realtor";
@@ -2821,6 +2862,19 @@ function normalizeCustomerUtterance(value) {
     .replace(/[-_]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function callerExplicitlyRequestsIntentOptions(value) {
+  const normalized = normalizeCustomerUtterance(value);
+  return [
+    /\bwhat (?:are|were) (?:the|my) (?:options|choices)\b/,
+    /\b(?:repeat|restate|list|say) (?:the|those) (?:options|choices)(?: again)?\b/,
+    /\b(?:i do not|i don't|i dont) understand\b/,
+    /\b(?:i am|i'm|im) confused\b/,
+    /\bnone of (?:those|the options|the choices) (?:match|apply|fit)\b/,
+    /\b(?:actually|instead),? i(?:'m| am) calling (?:about|for)\b/,
+    /\bmy reason for calling (?:changed|is different)\b/
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function affirmativeCustomerResponse(value) {
@@ -6197,21 +6251,15 @@ async function executeInboundTool(call, name, args) {
   const safeArgs = args && typeof args === "object" ? args : {};
 
   if (name === "save_inbound_caller_context") {
-    const supportedIntents = [
-      "NEW_DPA_INQUIRY",
-      "EXISTING_APPLICATION_FOLLOWUP",
-      "OTHER"
-    ];
     const suppliedIntent = cleanText(safeArgs.intent, 80);
-    if (suppliedIntent && !supportedIntents.includes(suppliedIntent)) {
+    if (suppliedIntent && !SUPPORTED_INBOUND_INTENTS.includes(suppliedIntent)) {
       return { success: false, error: "A supported inbound intent is required." };
     }
-    const savedIntent = cleanText(
-      call.intent || call.result?.inbound_intent || call.payload?.inbound_intent,
-      80
-    );
-    const intent = suppliedIntent ||
-      (supportedIntents.includes(savedIntent) ? savedIntent : "OTHER");
+    const savedIntent = savedInboundIntent(call);
+    const intentChangeConfirmed = safeArgs.intent_change_confirmed === true;
+    const intent = savedIntent && !intentChangeConfirmed
+      ? savedIntent
+      : suppliedIntent || savedIntent || "OTHER";
     const suppliedPhone = cleanText(safeArgs.phone_number, 100);
     const phoneNumber = suppliedPhone ? normalizePhone(suppliedPhone) : null;
     if (suppliedPhone && !phoneNumber) {
@@ -7985,6 +8033,12 @@ mediaServer.on("connection", (twilioSocket) => {
     });
   }
 
+  function refreshIntentInstructionsIfChanged(previousIntent) {
+    const currentIntent = savedInboundIntent(call);
+    if (!currentIntent || currentIntent === previousIntent) return false;
+    return refreshActiveRealtimeInstructions();
+  }
+
   function currentCallIsTerminal() {
     return (
       normalEndRequested ||
@@ -8183,7 +8237,8 @@ return true;
           nextCount,
           currentQuestionState()
         );
-        const instructions = nextCount === 1
+        const instructions =
+          nextCount === 1 || pendingQuestionType === "intent_discovery"
           ? 'Say exactly: "Are you still with me?" Say nothing else.'
           : `Repeat this pending question once, using the same meaning and no additional question: ${JSON.stringify(
               pendingQuestionText
@@ -8192,7 +8247,9 @@ return true;
           allowWhileAwaiting: true,
           preservePendingQuestion: true,
           waitingPromptKind:
-            nextCount === 1 ? "presence_reminder" : "pending_repeat",
+            nextCount === 1 || pendingQuestionType === "intent_discovery"
+              ? "presence_reminder"
+              : "pending_repeat",
           response: { output_modalities: ["audio"], instructions }
         });
       })().catch((error) => {
@@ -8285,7 +8342,9 @@ return true;
 
     if (isInterestRateQuestion(transcript)) {
       const returnToQuestion = awaitingCustomerResponse && pendingQuestionText
-        ? ` Then ask this still-pending question once and stop: ${JSON.stringify(pendingQuestionText)}`
+        ? pendingQuestionType === "intent_discovery"
+          ? " Then ask the caller to explain in their own words why they are calling. Do not list or restate the routing choices."
+          : ` Then ask this still-pending question once and stop: ${JSON.stringify(pendingQuestionText)}`
         : "";
       requestAssistantResponse({
         queueIfBusy: true,
@@ -8304,10 +8363,22 @@ return true;
       return;
     }
 
+    if (
+      savedInboundIntent(call) &&
+      callerExplicitlyRequestsIntentOptions(transcript)
+    ) {
+      console.log(JSON.stringify({
+        event: "inbound_intent_options_explicitly_requested",
+        call_id: call.call_id,
+        saved_intent: savedInboundIntent(call)
+      }));
+    }
+
     if (pendingQuestionType === "caller_name") {
       const capturedName = normalizeInboundFullName(transcript);
       if (capturedName.first_name && capturedName.last_name) {
         const activeCall = (await getCallById(call.call_id)) || call;
+        const previousIntent = savedInboundIntent(activeCall);
         const saved = await executeInboundTool(
           activeCall,
           "save_inbound_caller_context",
@@ -8321,6 +8392,7 @@ return true;
           throw new Error("The caller name could not be persisted.");
         }
         call = (await getCallById(call.call_id)) || call;
+        refreshIntentInstructionsIfChanged(previousIntent);
         await endLocalWaitingState("caller_name_saved");
         requestAssistantResponse({ queueIfBusy: true });
         return;
@@ -8331,6 +8403,7 @@ return true;
       const capturedEmail = normalizeInboundEmail(transcript);
       if (capturedEmail) {
         const activeCall = (await getCallById(call.call_id)) || call;
+        const previousIntent = savedInboundIntent(activeCall);
         const saved = await executeInboundTool(
           activeCall,
           "save_inbound_caller_context",
@@ -8340,6 +8413,7 @@ return true;
           throw new Error("The caller email could not be persisted.");
         }
         call = (await getCallById(call.call_id)) || call;
+        refreshIntentInstructionsIfChanged(previousIntent);
         await endLocalWaitingState("caller_email_saved");
         requestAssistantResponse({ queueIfBusy: true });
         return;
@@ -8437,6 +8511,8 @@ return true;
         nextCount,
         currentQuestionState()
       );
+      const intentDiscoveryPending =
+        pendingQuestionType === "intent_discovery";
       requestAssistantResponse({
         queueIfBusy: true,
         allowWhileAwaiting: true,
@@ -8444,24 +8520,32 @@ return true;
         waitingPromptKind: "pending_repeat",
         response: {
           output_modalities: ["audio"],
-          instructions: `Repeat this pending question once, using the same meaning and no additional question: ${JSON.stringify(
-            pendingQuestionText
-          )}`
+          instructions: intentDiscoveryPending
+            ? 'Ask the caller to explain in their own words why they are calling. Do not list or restate the routing choices.'
+            : `Repeat this pending question once, using the same meaning and no additional question: ${JSON.stringify(
+                pendingQuestionText
+              )}`
         }
       });
       return;
     }
 
     if (customerAskedSeparateQuestion(transcript)) {
+      const returnToPendingQuestion =
+        pendingQuestionType === "intent_discovery" &&
+        !callerExplicitlyRequestsIntentOptions(transcript)
+          ? "Then ask the caller to explain in their own words why they are calling. Do not list or restate the routing choices."
+          : `Then return naturally to this still-pending question, ask it once, and stop: ${JSON.stringify(
+              pendingQuestionText
+            )}`;
       requestAssistantResponse({
         queueIfBusy: true,
         allowWhileAwaiting: true,
         preservePendingQuestion: true,
         response: {
           output_modalities: ["audio"],
-          instructions: `Answer the customer's separate question briefly and accurately. Then return naturally to this still-pending question, ask it once, and stop: ${JSON.stringify(
-            pendingQuestionText
-          )}`
+          instructions:
+            `Answer the customer's separate question briefly and accurately. ${returnToPendingQuestion}`
         }
       });
       return;
@@ -8497,13 +8581,18 @@ return true;
     if (suspendedQuestionState) {
       const suspended = suspendedQuestionState;
       suspendedQuestionState = null;
+      const resumeInstruction =
+        suspended.pending_question_type === "intent_discovery"
+          ? "Then ask the caller to explain in their own words why they are calling. Do not list or restate the routing choices."
+          : `Then return to this previously pending question, ask it once, and stop: ${JSON.stringify(
+              suspended.pending_question_text
+            )}`;
       requestAssistantResponse({
         queueIfBusy: true,
         response: {
           output_modalities: ["audio"],
-          instructions: `Continue the identity-confirmed introduction briefly without asking another question. Then return to this previously pending question, ask it once, and stop: ${JSON.stringify(
-            suspended.pending_question_text
-          )}`
+          instructions:
+            `Continue the identity-confirmed introduction briefly without asking another question. ${resumeInstruction}`
         }
       });
     } else {
@@ -8636,9 +8725,11 @@ return true;
     }
 
     let output;
+    let previousInboundIntent = null;
     try {
       const refreshed = await getCallById(call.call_id);
       const activeCall = refreshed || call;
+      previousInboundIntent = savedInboundIntent(activeCall);
       output = INBOUND_TOOL_NAMES.has(name)
         ? await executeInboundTool(activeCall, name, args)
         : await routeIntent({
@@ -8662,6 +8753,11 @@ return true;
         data: {},
         error: { code: "ACTION_FAILED", retryable: true }
       };
+    }
+
+    if (name === "save_inbound_caller_context" && output?.success === true) {
+      call = (await getCallById(call.call_id)) || call;
+      refreshIntentInstructionsIfChanged(previousInboundIntent);
     }
 
     const completeCallSucceeded =
