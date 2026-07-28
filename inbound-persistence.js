@@ -227,6 +227,24 @@ function mondayStatusValue(column, desiredLabel) {
     : { label: typeof entry === "string" ? entry : entry.label || entry.name };
 }
 
+function mondayNumberValue(value) {
+  const cleaned = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[$,\s]/g, "");
+  const multiplier = cleaned.endsWith("k")
+    ? 1000
+    : cleaned.endsWith("m")
+      ? 1000000
+      : 1;
+  const numericText = multiplier === 1 ? cleaned : cleaned.slice(0, -1);
+  const numeric = Number(numericText) * multiplier;
+  if (!Number.isFinite(numeric)) {
+    throw new Error("The monday.com Annual Income value is invalid.");
+  }
+  return String(numeric);
+}
+
 function buildInboundMondayUpdateValues({
   data = {},
   columns,
@@ -248,6 +266,18 @@ function buildInboundMondayUpdateValues({
     if (!meaningfulValue(data[field])) continue;
     const column = requireMondayColumn(metadata, columnId, ["text"], titles);
     values[column.id] = String(data[field]).trim();
+  }
+  if (meaningfulValue(data.annual_household_income)) {
+    const column = requireMondayColumn(
+      metadata,
+      columns.annualIncome,
+      ["numbers", "numeric", "text"],
+      ["Annual Income", "Annual Household Income"]
+    );
+    const type = String(column.type || "").toLowerCase();
+    values[column.id] = ["numbers", "numeric"].includes(type)
+      ? mondayNumberValue(data.annual_household_income)
+      : String(data.annual_household_income).trim();
   }
   if (meaningfulValue(data.email)) {
     const column = requireMondayColumn(

@@ -765,6 +765,9 @@ const INBOUND_MONDAY = Object.freeze({
     email: "email_mm5f7560",
     phoneNumber: "phone_mm5fdqn5",
     creditScore: "text_mm5j48bj",
+    annualIncome: String(
+      process.env.INBOUND_ANNUAL_INCOME_COLUMN_ID || ""
+    ).trim(),
     taxReturnStatus: "text_mm5jx81q",
     dateCalled: "date_mm5fcmqe",
     summary: "text_mm5fsx2c",
@@ -4035,6 +4038,12 @@ function inboundCallSnapshot(call, overrides = {}) {
       result.credit_score || result.estimated_credit_score ||
         overrides.credit_score
     ),
+    annual_household_income: cleanText(
+      result.annual_household_income ||
+        overrides.annual_household_income ||
+        overrides.annual_income,
+      100
+    ),
     tax_return_status: normalizeInboundTaxReturnStatus(
       result.tax_return_status || result.two_year_tax_filing_status ||
         overrides.tax_return_status
@@ -4194,6 +4203,7 @@ async function saveInboundCallSummary(data = {}) {
         phone: snapshot.phone,
         email: snapshot.email,
         credit_score: snapshot.credit_score,
+        annual_household_income: snapshot.annual_household_income,
         tax_return_status: snapshot.tax_return_status,
         date_called: snapshot.date_called,
         ...(sourceSummary ? { agent_call_summary: sourceSummary } : {}),
@@ -7022,6 +7032,7 @@ async function executeInboundToolUnlocked(call, name, args) {
           alreadySerialized: true,
           overrides: {
             credit_score: savedFields.credit_score,
+            annual_household_income: savedFields.annual_household_income,
             tax_return_status: savedFields.tax_return_status,
             summary: savedFields.call_summary,
             call_status: savedFields.call_outcome,
