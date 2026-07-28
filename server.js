@@ -2862,6 +2862,15 @@ function pendingQuestionType(value) {
   if (/correct|isthatright|stillaccurate|confirm/.test(text)) {
     return "confirmation";
   }
+  if (/creditscore|score.*credit/.test(text)) return "credit_score";
+  if (
+    /annual.*household.*income|household.*income|income.*beforetax/.test(text)
+  ) {
+    return "annual_household_income";
+  }
+  if (/filed.*taxreturns?|taxreturns?.*lasttwoyears/.test(text)) {
+    return "tax_return_status";
+  }
   if (/timeframe|timeline|purchase|buy|income|credit|employment|tax/.test(text)) {
     return "qualification";
   }
@@ -3363,7 +3372,8 @@ function normalizeInboundTaxReturnStatus(value) {
     normalized === "yes" ||
     normalized === "twoyearsfiled" ||
     normalized === "2yearsfiled" ||
-    normalized === "two_years_filed"
+    normalized === "two_years_filed" ||
+    /(?:yes|filed).*(?:last|past|for)?(?:the)?(?:two|2)years/.test(normalized)
   ) {
     return "2 Years Filed";
   }
@@ -3375,7 +3385,11 @@ function normalizeInboundTaxReturnStatus(value) {
   ) {
     return "1 Year Filed";
   }
-  if (normalized === "notfiled" || normalized === "not_filed") {
+  if (
+    normalized === "notfiled" ||
+    normalized === "not_filed" ||
+    /(?:have|has|did)?notfiled|haventfiled|didntfile/.test(normalized)
+  ) {
     return "Not Filed";
   }
   if (normalized === "notsure" || normalized === "not_sure") {
@@ -3391,6 +3405,51 @@ function normalizeInboundCreditScore(value) {
   if (matches.length !== 1) return "";
   const score = Number(matches[0]);
   return score >= 300 && score <= 850 ? String(score) : "";
+}
+
+function normalizeInboundAnnualIncome(value) {
+  const cleaned = cleanText(value, 100);
+  if (!cleaned) return "";
+  const digitMatch = cleaned.match(
+    /\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|m|million)?/i
+  );
+  if (digitMatch) {
+    const base = Number(digitMatch[1].replace(/,/g, ""));
+    const suffix = String(digitMatch[2] || "").toLowerCase();
+    const multiplier = ["k", "thousand"].includes(suffix)
+      ? 1000
+      : ["m", "million"].includes(suffix)
+        ? 1000000
+        : 1;
+    const income = base * multiplier;
+    return Number.isFinite(income) && income > 0 ? String(income) : "";
+  }
+  const numberWords = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+    eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13,
+    fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18,
+    nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50,
+    sixty: 60, seventy: 70, eighty: 80, ninety: 90
+  };
+  const tokens = cleaned.toLowerCase().replace(/-/g, " ").match(/[a-z]+/g) || [];
+  let total = 0;
+  let current = 0;
+  let recognized = 0;
+  for (const token of tokens) {
+    if (Object.prototype.hasOwnProperty.call(numberWords, token)) {
+      current += numberWords[token];
+      recognized += 1;
+    } else if (token === "hundred") {
+      current = Math.max(1, current) * 100;
+      recognized += 1;
+    } else if (token === "thousand" || token === "million") {
+      total += Math.max(1, current) * (token === "thousand" ? 1000 : 1000000);
+      current = 0;
+      recognized += 1;
+    }
+  }
+  const income = total + current;
+  return recognized && income > 0 ? String(income) : "";
 }
 
 function cleanInboundContactValue(value, maximumLength = 320) {
@@ -6957,7 +7016,9 @@ async function executeInboundToolUnlocked(call, name, args) {
       homebuying_timeline: cleanText(safeArgs.homebuying_timeline, 500),
       estimated_credit_score: creditScore,
       credit_score: creditScore,
-      annual_household_income: cleanText(safeArgs.annual_household_income, 100),
+      annual_household_income: normalizeInboundAnnualIncome(
+        safeArgs.annual_household_income
+      ),
       two_year_tax_filing_status: cleanText(safeArgs.two_year_tax_filing_status, 50),
       tax_return_status: taxReturnStatus,
       website_visited: safeArgs.website_visited,
@@ -9204,6 +9265,42 @@ return true;
         call = (await getCallById(call.call_id)) || call;
         refreshIntentInstructionsIfChanged(previousIntent);
         await endLocalWaitingState("caller_email_saved");
+        requestAssistantResponse({ queueIfBusy: true });
+        return;
+      }
+    }
+
+    if (
+      [
+        "credit_score",
+        "annual_household_income",
+        "tax_return_status"
+      ].includes(String(pendingQuestionType || ""))
+    ) {
+      const recognizedValue = pendingQuestionType === "credit_score"
+        ? normalizeInboundCreditScore(transcript)
+        : pendingQuestionType === "annual_household_income"
+          ? normalizeInboundAnnualIncome(transcript)
+          : normalizeInboundTaxReturnStatus(transcript);
+      if (recognizedValue) {
+        const activeCall = (await getCallById(call.call_id)) || call;
+        const toolArgs = pendingQuestionType === "credit_score"
+          ? { estimated_credit_score: recognizedValue }
+          : pendingQuestionType === "annual_household_income"
+            ? { annual_household_income: recognizedValue }
+            : { two_year_tax_filing_status: recognizedValue };
+        const saved = await executeInboundTool(
+          activeCall,
+          "save_inbound_caller_context",
+          toolArgs
+        );
+        if (saved?.success !== true) {
+          throw new Error(
+            `The ${pendingQuestionType} answer could not be persisted.`
+          );
+        }
+        call = (await getCallById(call.call_id)) || call;
+        await endLocalWaitingState(`${pendingQuestionType}_saved`);
         requestAssistantResponse({ queueIfBusy: true });
         return;
       }

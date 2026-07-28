@@ -303,35 +303,49 @@ function buildInboundMondayUpdateValues({
         : summary;
   }
   if (meaningfulValue(data.caller_type)) {
-    const column = requireMondayColumn(
-      metadata,
-      columns.callerType,
-      ["color", "status"],
-      ["Caller Type", "Call Type"]
-    );
-    const statusValue = mondayStatusValue(
-      column,
-      String(data.caller_type).trim()
-    );
-    if (statusValue) {
-      values[column.id] = statusValue;
-    } else {
-      const labels = column?.settings?.labels;
-      const availableLabels = (Array.isArray(labels)
-        ? labels
-        : Object.values(labels || {})
-      )
-        .map((entry) =>
-          typeof entry === "string" ? entry : entry?.label || entry?.name
-        )
-        .filter(Boolean);
+    let column = null;
+    try {
+      column = requireMondayColumn(
+        metadata,
+        columns.callerType,
+        ["color", "status"],
+        ["Caller Type", "Call Type"]
+      );
+    } catch (error) {
       onSkippedColumn({
         field: "caller_type",
-        columnId: column.id,
+        columnId: columns.callerType,
         desiredValue: String(data.caller_type).trim(),
-        reason: "status_label_not_found",
-        availableLabels
+        reason: "column_not_found",
+        availableLabels: [],
+        error: error.message
       });
+    }
+    if (column) {
+      const statusValue = mondayStatusValue(
+        column,
+        String(data.caller_type).trim()
+      );
+      if (statusValue) {
+        values[column.id] = statusValue;
+      } else {
+        const labels = column?.settings?.labels;
+        const availableLabels = (Array.isArray(labels)
+          ? labels
+          : Object.values(labels || {})
+        )
+          .map((entry) =>
+            typeof entry === "string" ? entry : entry?.label || entry?.name
+          )
+          .filter(Boolean);
+        onSkippedColumn({
+          field: "caller_type",
+          columnId: column.id,
+          desiredValue: String(data.caller_type).trim(),
+          reason: "status_label_not_found",
+          availableLabels
+        });
+      }
     }
   }
   if (meaningfulValue(data.next_follow_up)) {

@@ -358,3 +358,62 @@ test("a missing Caller Type label does not block other valid Monday values", () 
     availableLabels: ["Lead", "Client"]
   }]);
 });
+
+test("a removed Caller Type column does not block collected qualification values", () => {
+  const skipped = [];
+  const columns = {
+    firstName: "text_mm5fx7z9",
+    lastName: "text_mm5ffrc0",
+    email: "email_mm5f7560",
+    creditScore: "text_mm5j48bj",
+    annualIncome: "",
+    taxReturnStatus: "text_mm5jx81q",
+    summary: "text_mm5fsx2c",
+    callerType: "color_mm5es680",
+    nextFollowUp: "date_mm5ew2hf"
+  };
+  const values = buildInboundMondayUpdateValues({
+    data: {
+      credit_score: "700",
+      annual_household_income: "75000",
+      tax_return_status: "2 Years Filed",
+      caller_type: "Inbound Call",
+      next_follow_up: "2026-08-05",
+      follow_up_time: "14:30"
+    },
+    columns,
+    metadata: {
+      columns: [
+        { id: columns.creditScore, title: "Credit Score", type: "text" },
+        {
+          id: "numbers_mm5annual",
+          title: "Annual_household_income",
+          type: "numbers"
+        },
+        {
+          id: columns.taxReturnStatus,
+          title: "Tax Return Status",
+          type: "text"
+        },
+        {
+          id: columns.nextFollowUp,
+          title: "Next_follow_up",
+          type: "date"
+        }
+      ]
+    },
+    onSkippedColumn: (details) => skipped.push(details)
+  });
+  assert.deepEqual(values, {
+    text_mm5j48bj: "700",
+    numbers_mm5annual: "75000",
+    text_mm5jx81q: "2 Years Filed",
+    date_mm5ew2hf: {
+      date: "2026-08-05",
+      time: "14:30:00"
+    }
+  });
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0].field, "caller_type");
+  assert.equal(skipped[0].reason, "column_not_found");
+});
