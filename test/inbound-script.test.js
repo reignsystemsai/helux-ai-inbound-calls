@@ -72,6 +72,19 @@ test("the no-filler lock filters output without changing the script", () => {
     serverSource,
     /Say exactly:\s*"Are you still with me\?"/
   );
+  assert.equal(
+    (serverSource.match(/type:\s*"response\.create"/g) || []).length,
+    1,
+    "all assistant responses must use the single guarded response path"
+  );
+  assert.match(
+    serverSource,
+    /response\.output_audio_transcript\.delta" \|\|[\s\S]{0,100}response\.audio_transcript\.delta/
+  );
+  assert.match(
+    serverSource,
+    /response\.output_audio_transcript\.done" \|\|[\s\S]{0,100}response\.audio_transcript\.done/
+  );
 });
 
 test("saved purchase location prevents a repeated city and state question", () => {
@@ -111,6 +124,14 @@ test("the assistance maximum can be spoken only once per call", () => {
   assert.match(
     serverSource,
     /duplicateAssistanceMaximum[\s\S]{0,1000}DUPLICATE_ASSISTANCE_MAXIMUM/
+  );
+  assert.match(
+    serverSource,
+    /IF ASKED HOW MUCH ASSISTANCE IS AVAILABLE[\s\S]{0,350}Begin immediately with the first approved sentence/
+  );
+  assert.match(
+    serverSource,
+    /let me give you\\s\+\(\?:a\\s\+\)\?\(\?:quick\|brief\)\?/
   );
 });
 

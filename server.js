@@ -222,7 +222,13 @@ const INLINE_UNSCRIPTED_FILLER = Object.freeze([
   /\b(?:here'?s|this is)\s+what\s+(?:we|i)\s+(?:need|should|will)\s+(?:to\s+)?do next\b/i,
   /\bi can point you\s+(?:to|where|how)\s+(?:to\s+)?apply\b/i,
   /\bi can give you\s+(?:an?|the)\s+(?:general\s+)?example\b/i,
-  /\bare you still with me\b/i
+  /\bare you still with me\b/i,
+  /\b(?:i need to|i(?:'m| am) going to)\s+(?:think|figure|determine|check|adjust)\b/i,
+  /\b(?:give me|just)\s+(?:a|one)\s+moment\b/i,
+  /\bthinking through\b/i,
+  /\blet me give you\s+(?:a\s+)?(?:quick|brief)?\s*overview\b/i,
+  /\bgather\s+(?:a\s+)?few details\s+to\s+narrow\s+it\s+down\b/i,
+  /\bnarrow\s+it\s+down\b/i
 ]);
 
 function inlineRequestsProhibitedInformation(value) {
@@ -1344,6 +1350,8 @@ GENERAL DPA RESPONSE AMMUNITION
 Answer only the caller's actual question. Do not recite every approved response.
 
 IF ASKED HOW MUCH ASSISTANCE IS AVAILABLE
+Begin immediately with the first approved sentence below. Do not introduce this section, announce an overview, say that you will gather details, or add a transition before the approved response.
+
 You may say:
 "Some down payment assistance programs may offer up to $100,000 in assistance. The amount available depends on the program and the homebuyer's eligibility."
 
@@ -10221,7 +10229,10 @@ return true;
           return;
         }
 
-        if (event.type === "response.output_audio_transcript.delta") {
+        if (
+          event.type === "response.output_audio_transcript.delta" ||
+          event.type === "response.audio_transcript.delta"
+        ) {
           assistantTranscriptBuffer += event.delta || "";
           const includesAssistanceMaximum =
             /\bup to\s+(?:\$\s*)?(?:100(?:,\s*|\s*)000|one hundred thousand)(?:\s+dollars?)?\b/i.test(
@@ -10435,7 +10446,10 @@ return true;
           return;
         }
 
-        if (event.type === "response.output_audio_transcript.done") {
+        if (
+          event.type === "response.output_audio_transcript.done" ||
+          event.type === "response.audio_transcript.done"
+        ) {
           if (!assistantTranscriptBuffer && event.transcript) {
             assistantTranscriptBuffer = event.transcript;
           }
