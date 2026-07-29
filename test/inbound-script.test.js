@@ -68,52 +68,6 @@ test("the no-filler lock filters output without changing the script", () => {
     serverSource,
     /Then ask exactly:\s*"Before we continue, may I have your first and last name\?"/
   );
-  assert.doesNotMatch(
-    serverSource,
-    /Say exactly:\s*"Are you still with me\?"/
-  );
-  assert.equal(
-    (serverSource.match(/type:\s*"response\.create"/g) || []).length,
-    1,
-    "all assistant responses must use the single guarded response path"
-  );
-  assert.match(
-    serverSource,
-    /response\.output_audio_transcript\.delta" \|\|[\s\S]{0,100}response\.audio_transcript\.delta/
-  );
-  assert.match(
-    serverSource,
-    /response\.output_audio_transcript\.done" \|\|[\s\S]{0,100}response\.audio_transcript\.done/
-  );
-});
-
-test("one script-follow override controls every inbound response path", () => {
-  const serverSource = fs.readFileSync(
-    path.join(__dirname, "..", "server.js"),
-    "utf8"
-  );
-
-  assert.equal(
-    (serverSource.match(/const DAISY_INBOUND_TEST_SCRIPT\s*=/g) || []).length,
-    1,
-    "inbound Daisy must have one authoritative script"
-  );
-  assert.match(
-    serverSource,
-    /const DAISY_INBOUND_SCRIPT_FOLLOW_OVERRIDE\s*=/
-  );
-  assert.match(
-    serverSource,
-    /return \[\s*DAISY_INBOUND_SCRIPT_FOLLOW_OVERRIDE,[\s\S]{0,500}script\s*\]\.join/
-  );
-  assert.match(
-    serverSource,
-    /if \(options\.response\) \{[\s\S]{0,500}DAISY_RESPONSE_SCRIPT_LOCK/
-  );
-  assert.doesNotMatch(
-    serverSource,
-    /const event = \{ type: "response\.create" \};\s*event\.response\s*=/
-  );
 });
 
 test("saved purchase location prevents a repeated city and state question", () => {
@@ -153,22 +107,6 @@ test("the assistance maximum can be spoken only once per call", () => {
   assert.match(
     serverSource,
     /duplicateAssistanceMaximum[\s\S]{0,1000}DUPLICATE_ASSISTANCE_MAXIMUM/
-  );
-  assert.match(
-    serverSource,
-    /IF ASKED HOW MUCH ASSISTANCE IS AVAILABLE[\s\S]{0,350}Begin immediately with the first approved sentence/
-  );
-  assert.match(
-    serverSource,
-    /let me give you\\s\+\(\?:a\\s\+\)\?\(\?:quick\|brief\)\?/
-  );
-  assert.match(
-    serverSource,
-    /let'\?s see what\\s\+\(\?:affects\|effects\|impacts\)/
-  );
-  assert.match(
-    serverSource,
-    /compliance\.code === "UNSCRIPTED_FILLER"[\s\S]{0,2500}allowWhileAwaiting: true/
   );
 });
 

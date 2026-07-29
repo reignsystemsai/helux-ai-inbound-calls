@@ -221,15 +221,7 @@ const INLINE_UNSCRIPTED_FILLER = Object.freeze([
   /\blet me\s+(?:think|adjust|figure|consider|decide|check|make a note|wrap)\b/i,
   /\b(?:here'?s|this is)\s+what\s+(?:we|i)\s+(?:need|should|will)\s+(?:to\s+)?do next\b/i,
   /\bi can point you\s+(?:to|where|how)\s+(?:to\s+)?apply\b/i,
-  /\bi can give you\s+(?:an?|the)\s+(?:general\s+)?example\b/i,
-  /\bare you still with me\b/i,
-  /\b(?:i need to|i(?:'m| am) going to)\s+(?:think|figure|determine|check|adjust)\b/i,
-  /\b(?:give me|just)\s+(?:a|one)\s+moment\b/i,
-  /\bthinking through\b/i,
-  /\blet me give you\s+(?:a\s+)?(?:quick|brief)?\s*overview\b/i,
-  /\bgather\s+(?:a\s+)?few details\s+to\s+narrow\s+it\s+down\b/i,
-  /\bnarrow\s+it\s+down\b/i,
-  /\blet'?s see what\s+(?:affects|effects|impacts)\s+(?:that|the)\s+amount\b/i
+  /\bi can give you\s+(?:an?|the)\s+(?:general\s+)?example\b/i
 ]);
 
 function inlineRequestsProhibitedInformation(value) {
@@ -1233,19 +1225,6 @@ function confirmedConsent(payload) {
   return ["confirmed", "granted", "approved", "yes"].includes(status);
 }
 
-const DAISY_INBOUND_SCRIPT_FOLLOW_OVERRIDE = [
-  "SCRIPT FOLLOW OVERRIDE — HIGHEST PRIORITY",
-  "The DAISY INBOUND DPA CALL SCRIPT below is the only authorized inbound talk track.",
-  "Speak quoted dialogue exactly as written, replacing only bracketed placeholders with saved session values.",
-  "Use unquoted instructions only to select the next applicable quoted line. Never speak or paraphrase the instructions.",
-  "Never invent, expand, summarize, preface, bridge, narrate, or substitute wording that is not in the approved script.",
-  "Saved session state determines which steps are complete. Skip completed steps, but never skip an incomplete required step.",
-  "After a tool call, interruption, canceled filler response, or resumed connection, continue with the next incomplete approved script line.",
-  "If any other instruction conflicts with this override, this override and the saved session state control."
-].join("\n");
-const DAISY_RESPONSE_SCRIPT_LOCK =
-  "SCRIPT LOCK: Follow the active inbound script exactly. Do not add, replace, paraphrase, or omit spoken wording.";
-
 const DAISY_INBOUND_TEST_SCRIPT = `
 DAISY INBOUND DPA CALL SCRIPT
 
@@ -1337,10 +1316,10 @@ Continue directly to phone-number confirmation without a standalone acknowledgme
 
 EARLY EMAIL COLLECTION
 Use the inbound caller ID as phone_number. Ask exactly:
-"I have the last four of your phone as [Last Four Digits], is that correct?"
+"I have the phone number you're calling from ending in [Last Four Digits]. Is that correct?"
 
 Wait for the caller's response. If the caller confirms the number, say exactly:
-"And what's a good email for you?"
+"Perfect, and what's a good email for you before we dive into things?"
 
 If the caller says the number is incorrect, ask for the correct phone number, save it, and then say the same exact email question.
 
@@ -1364,8 +1343,6 @@ GENERAL DPA RESPONSE AMMUNITION
 Answer only the caller's actual question. Do not recite every approved response.
 
 IF ASKED HOW MUCH ASSISTANCE IS AVAILABLE
-Begin immediately with the first approved sentence below. Do not introduce this section, announce an overview, say that you will gather details, or add a transition before the approved response.
-
 You may say:
 "Some down payment assistance programs may offer up to $100,000 in assistance. The amount available depends on the program and the homebuyer's eligibility."
 
@@ -1699,7 +1676,6 @@ function buildDaisyInboundInstructions(call) {
     .replaceAll("{caller_name}", callerName)
     .replaceAll("{lead_source}", leadSource);
   return [
-    DAISY_INBOUND_SCRIPT_FOLLOW_OVERRIDE,
     inboundIntentStateInstruction(call),
     inboundPurchaseLocationStateInstruction(call),
     inboundAssistanceMaximumStateInstruction(call),
@@ -9369,15 +9345,7 @@ mediaServer.on("connection", (twilioSocket) => {
     pendingResponsePreservesQuestion = options.preservePendingQuestion === true;
     pendingResponseWaitingPromptKind = options.waitingPromptKind || null;
 const event = { type: "response.create" };
-if (options.response) {
-  event.response = {
-    ...options.response,
-    instructions: [
-      options.response.instructions,
-      DAISY_RESPONSE_SCRIPT_LOCK
-    ].filter(Boolean).join("\n")
-  };
-}
+if (options.response) event.response = options.response;
 
 if (!sendToOpenAI(event)) {
   responseCreatePending = false;
@@ -9428,13 +9396,18 @@ return true;
           currentQuestionState()
         );
         const instructions =
-          `Repeat this pending question once, using the same meaning and no additional question: ${JSON.stringify(
-            pendingQuestionText
-          )}`;
+          nextCount === 1 || pendingQuestionType === "intent_discovery"
+          ? 'Say exactly: "Are you still with me?" Say nothing else.'
+          : `Repeat this pending question once, using the same meaning and no additional question: ${JSON.stringify(
+              pendingQuestionText
+            )}`;
         requestAssistantResponse({
           allowWhileAwaiting: true,
           preservePendingQuestion: true,
-          waitingPromptKind: "pending_repeat",
+          waitingPromptKind:
+            nextCount === 1 || pendingQuestionType === "intent_discovery"
+              ? "presence_reminder"
+              : "pending_repeat",
           response: { output_modalities: ["audio"], instructions }
         });
       })().catch((error) => {
@@ -10252,10 +10225,7 @@ return true;
           return;
         }
 
-        if (
-          event.type === "response.output_audio_transcript.delta" ||
-          event.type === "response.audio_transcript.delta"
-        ) {
+        if (event.type === "response.output_audio_transcript.delta") {
           assistantTranscriptBuffer += event.delta || "";
           const includesAssistanceMaximum =
             /\bup to\s+(?:\$\s*)?(?:100(?:,\s*|\s*)000|one hundred thousand)(?:\s+dollars?)?\b/i.test(
@@ -10321,7 +10291,6 @@ return true;
               requestAssistantResponse({
                 ...originalOptions,
                 queueIfBusy: true,
-                allowWhileAwaiting: true,
                 response: {
                   ...originalResponse,
                   output_modalities:
@@ -10470,10 +10439,7 @@ return true;
           return;
         }
 
-        if (
-          event.type === "response.output_audio_transcript.done" ||
-          event.type === "response.audio_transcript.done"
-        ) {
+        if (event.type === "response.output_audio_transcript.done") {
           if (!assistantTranscriptBuffer && event.transcript) {
             assistantTranscriptBuffer = event.transcript;
           }
