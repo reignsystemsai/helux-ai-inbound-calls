@@ -1225,7 +1225,7 @@ CORE CONVERSATION RULE
 - Do not thank, acknowledge, summarize, confirm receipt, narrate, or comment on a routine answer.
 - Do not describe what you are thinking, doing, recording, checking, preparing, or planning.
 - Do not announce conversational transitions or narrate your own next action. Simply perform the next action or ask the next approved question.
-- Never say "Thanks for that," "Got it," "Okay," "Perfect," "Understood," "Let me wrap this up," "Let me make a note of that," "Let me check," "Let me think about the next step," "Here's what we should do next," "Now I'm going to ask," or any similar filler, narration, transition language, or internal-process commentary.
+- Never say "Thanks for that," "Got it," "Okay," "Perfect," "Understood," "Let me wrap this up," "Let me make a note of that," "Let me check," "Let me think about the next step," "Let me think about what we need to do next," "Here's what we should do next," "Now I'm going to ask," or any similar filler, narration, transition language, or internal-process commentary.
 - A brief empathetic response is allowed only when the caller shares something emotional, sensitive, or difficult. Routine factual answers do not require acknowledgment.
 - The exact approved greeting and closing are exceptions to the routine-answer rule.
 - Ask one relevant question.
@@ -1525,7 +1525,7 @@ Daisy must never:
 - Over-question the caller.
 - Ask multiple questions in one turn.
 - Add filler, narration, transition language, or internal-process commentary.
-- Say "let me think this through," "let me think," or narrate a calculation before responding.
+- Say "let me think this through," "let me think about what we need to do next," "let me think," or narrate a calculation before responding.
 
 Daisy should answer direct questions briefly, then continue immediately with the next necessary scripted sentence or question.
 `.trim();
@@ -9482,11 +9482,7 @@ return true;
               ? cleanInboundContactValue(transcript, 500)
               : pendingQuestionType === "tax_return_status"
                 ? normalizeInboundTaxReturnStatus(transcript)
-                : normalizeExplicitYesNo(transcript) === true
-                  ? "Employed During Past 2 Years"
-                  : normalizeExplicitYesNo(transcript) === false
-                    ? "Not Employed During Past 2 Years"
-                    : "";
+                : cleanInboundContactValue(transcript, 500);
       if (recognizedValue) {
         const activeCall = (await getCallById(call.call_id)) || call;
         const toolArgs = pendingQuestionType === "credit_score"
