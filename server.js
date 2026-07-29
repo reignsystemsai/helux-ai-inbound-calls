@@ -228,7 +228,8 @@ const INLINE_UNSCRIPTED_FILLER = Object.freeze([
   /\bthinking through\b/i,
   /\blet me give you\s+(?:a\s+)?(?:quick|brief)?\s*overview\b/i,
   /\bgather\s+(?:a\s+)?few details\s+to\s+narrow\s+it\s+down\b/i,
-  /\bnarrow\s+it\s+down\b/i
+  /\bnarrow\s+it\s+down\b/i,
+  /\blet'?s see what\s+(?:affects|effects|impacts)\s+(?:that|the)\s+amount\b/i
 ]);
 
 function inlineRequestsProhibitedInformation(value) {
@@ -10298,6 +10299,7 @@ return true;
               requestAssistantResponse({
                 ...originalOptions,
                 queueIfBusy: true,
+                allowWhileAwaiting: true,
                 response: {
                   ...originalResponse,
                   output_modalities:

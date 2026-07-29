@@ -133,6 +133,14 @@ test("the assistance maximum can be spoken only once per call", () => {
     serverSource,
     /let me give you\\s\+\(\?:a\\s\+\)\?\(\?:quick\|brief\)\?/
   );
+  assert.match(
+    serverSource,
+    /let'\?s see what\\s\+\(\?:affects\|effects\|impacts\)/
+  );
+  assert.match(
+    serverSource,
+    /compliance\.code === "UNSCRIPTED_FILLER"[\s\S]{0,2500}allowWhileAwaiting: true/
+  );
 });
 
 test("the how-to-get-started path restores the qualification flow", () => {
