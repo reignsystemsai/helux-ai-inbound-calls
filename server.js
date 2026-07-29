@@ -1292,11 +1292,16 @@ Then ask exactly:
 "Before we continue, may I have your first and last name?"
 
 Parse and save the confirmed answer as first_name and last_name with save_inbound_caller_context. Do not ask separate first-name and last-name questions. Respond:
-Continue directly to email collection without a standalone acknowledgment.
+Continue directly to phone-number confirmation without a standalone acknowledgment.
 
 EARLY EMAIL COLLECTION
-Use the inbound caller ID as phone_number without asking the caller to confirm whether it is the best number. Then ask exactly:
-"I have the phone number you're calling from ending in [Last Four Digits], and by the way, what is a good email for you?"
+Use the inbound caller ID as phone_number. Ask exactly:
+"I have the phone number you're calling from ending in [Last Four Digits]. Is that correct?"
+
+Wait for the caller's response. If the caller confirms the number, say exactly:
+"Perfect, and what's a good email for you before we dive into things?"
+
+If the caller says the number is incorrect, ask for the correct phone number, save it, and then say the same exact email question.
 
 Save email and repeat it back once for confirmation. Do not ask for the email again later in the call unless the caller corrects it or specifically says a different email was used for an existing application. Then immediately return to the caller's question or move the call forward.
 
@@ -1494,8 +1499,8 @@ Before complete_call, save a concise factual call_summary containing only availa
 CLOSING
 After the follow-up is scheduled or declined and the summary is saved, use the existing complete_call flow. The approved closing is:
 "Thank you for calling the DPA Help Center, [First Name]."
-"We appreciate the opportunity to help you on your journey toward homeownership."
-"Remember, your next step is to complete the readiness application at dpahelpcenter.com."
+"You're one step closer to becoming a homeowner in [Saved City], [Saved State]."
+"And remember, your next step is to complete the readiness application at dpahelpcenter.com."
 "Have a wonderful day."
 
 Do not add another closing.
@@ -3594,6 +3599,40 @@ function inboundCallerFirstName(call) {
   const direct = firstInboundContactValue(100, result.first_name);
   if (direct) return normalizeInboundFullName(direct).first_name || direct;
   return normalizeInboundFullName(result.full_name).first_name || null;
+}
+
+function inboundPurchaseLocationLabel(call) {
+  const result = call?.result || {};
+  const parsed = parseInboundPurchaseLocation(result.purchase_area);
+  const city = firstInboundContactValue(
+    160,
+    result.purchase_city,
+    parsed?.city
+  );
+  const state = firstInboundContactValue(
+    100,
+    result.purchase_state,
+    parsed?.state
+  );
+  return city && state ? `${city}, ${state}` : null;
+}
+
+function buildInboundFinalClosing(call) {
+  const firstName = inboundCallerFirstName(call);
+  const purchaseLocation = inboundPurchaseLocationLabel(call);
+  const followUpConfirmation = formatInboundFollowUpConfirmation(
+    call?.result?.inbound_follow_up
+  );
+  return `${followUpConfirmation
+    ? `${followUpConfirmation} `
+    : ""
+  }${firstName
+    ? `Thank you for calling the DPA Help Center, ${firstName}.`
+    : "Thank you for calling the DPA Help Center."
+  } ${purchaseLocation
+    ? `You're one step closer to becoming a homeowner in ${purchaseLocation}.`
+    : "You're one step closer to becoming a homeowner."
+  } And remember, your next step is to complete the readiness application at dpahelpcenter.com. Have a wonderful day.`;
 }
 
 function normalizeInboundEmail(value) {
@@ -9017,17 +9056,7 @@ mediaServer.on("connection", (twilioSocket) => {
   }
 
   function exactFinalClosingSpoken(value) {
-    const firstName = inboundCallerFirstName(call);
-    const followUpConfirmation = formatInboundFollowUpConfirmation(
-      call?.result?.inbound_follow_up
-    );
-    const expected = `${followUpConfirmation
-      ? `${followUpConfirmation} `
-      : ""
-    }${firstName
-      ? `Thank you for calling the DPA Help Center, ${firstName}.`
-      : "Thank you for calling the DPA Help Center."
-    } We appreciate the opportunity to help you on your journey toward homeownership. Remember, the next step is to complete the readiness application at dpahelpcenter.com. Have a wonderful day.`;
+    const expected = buildInboundFinalClosing(call);
     return normalizeCustomerUtterance(value) === normalizeCustomerUtterance(expected);
   }
 
@@ -9926,17 +9955,7 @@ return true;
       }
     });
     if (terminalActionSucceeded) {
-      const firstName = inboundCallerFirstName(call);
-      const followUpConfirmation = formatInboundFollowUpConfirmation(
-        call.result?.inbound_follow_up
-      );
-      const finalClosing = `${followUpConfirmation
-        ? `${followUpConfirmation} `
-        : ""
-      }${firstName
-        ? `Thank you for calling the DPA Help Center, ${firstName}.`
-        : "Thank you for calling the DPA Help Center."
-      } We appreciate the opportunity to help you on your journey toward homeownership. Remember, the next step is to complete the readiness application at dpahelpcenter.com. Have a wonderful day.`;
+      const finalClosing = buildInboundFinalClosing(call);
       requestAssistantResponse({
         queueIfBusy: true,
         allowTerminalClosing: true,
