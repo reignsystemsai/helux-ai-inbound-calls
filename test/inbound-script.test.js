@@ -68,6 +68,10 @@ test("the no-filler lock filters output without changing the script", () => {
     serverSource,
     /Then ask exactly:\s*"Before we continue, may I have your first and last name\?"/
   );
+  assert.doesNotMatch(
+    serverSource,
+    /Say exactly:\s*"Are you still with me\?"/
+  );
 });
 
 test("saved purchase location prevents a repeated city and state question", () => {

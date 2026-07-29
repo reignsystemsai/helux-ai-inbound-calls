@@ -221,7 +221,8 @@ const INLINE_UNSCRIPTED_FILLER = Object.freeze([
   /\blet me\s+(?:think|adjust|figure|consider|decide|check|make a note|wrap)\b/i,
   /\b(?:here'?s|this is)\s+what\s+(?:we|i)\s+(?:need|should|will)\s+(?:to\s+)?do next\b/i,
   /\bi can point you\s+(?:to|where|how)\s+(?:to\s+)?apply\b/i,
-  /\bi can give you\s+(?:an?|the)\s+(?:general\s+)?example\b/i
+  /\bi can give you\s+(?:an?|the)\s+(?:general\s+)?example\b/i,
+  /\bare you still with me\b/i
 ]);
 
 function inlineRequestsProhibitedInformation(value) {
@@ -9396,18 +9397,13 @@ return true;
           currentQuestionState()
         );
         const instructions =
-          nextCount === 1 || pendingQuestionType === "intent_discovery"
-          ? 'Say exactly: "Are you still with me?" Say nothing else.'
-          : `Repeat this pending question once, using the same meaning and no additional question: ${JSON.stringify(
-              pendingQuestionText
-            )}`;
+          `Repeat this pending question once, using the same meaning and no additional question: ${JSON.stringify(
+            pendingQuestionText
+          )}`;
         requestAssistantResponse({
           allowWhileAwaiting: true,
           preservePendingQuestion: true,
-          waitingPromptKind:
-            nextCount === 1 || pendingQuestionType === "intent_discovery"
-              ? "presence_reminder"
-              : "pending_repeat",
+          waitingPromptKind: "pending_repeat",
           response: { output_modalities: ["audio"], instructions }
         });
       })().catch((error) => {
