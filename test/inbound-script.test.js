@@ -44,3 +44,31 @@ test("home price and purchase timeframe answers have explicit save instructions"
     /Never say[\s\S]{0,500}Let me think about what we need to do next/i
   );
 });
+
+test("every Daisy response is protected by the no-filler output lock", () => {
+  const serverSource = fs.readFileSync(
+    path.join(__dirname, "..", "server.js"),
+    "utf8"
+  );
+
+  assert.match(
+    serverSource,
+    /const DAISY_NO_FILLER_RESPONSE_RULE[\s\S]{0,1600}const INLINE_UNSCRIPTED_FILLER/
+  );
+  assert.match(
+    serverSource,
+    /function requestAssistantResponse[\s\S]{0,1600}DAISY_NO_FILLER_RESPONSE_RULE/
+  );
+  assert.match(
+    serverSource,
+    /guardAssistantOutput\(assistantTranscriptBuffer\)[\s\S]{0,900}compliance\.retryInstructions/
+  );
+  assert.doesNotMatch(
+    serverSource,
+    /Then ask exactly:\s*"Before we continue, may I have your first and last name\?"/
+  );
+  assert.match(
+    serverSource,
+    /Then ask exactly:\s*"May I have your first and last name\?"/
+  );
+});

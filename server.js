@@ -215,6 +215,16 @@ const INLINE_PROHIBITED_REQUESTS = Object.freeze([
   /card number/i, /password/i, /one[- ]time (?:passcode|code)|\botp\b/i
 ]);
 
+const DAISY_NO_FILLER_RESPONSE_RULE =
+  "HIGHEST PRIORITY OUTPUT LOCK: Speak only the requested exact line or the next approved scripted sentence or question. Never add a preface, acknowledgment, transition, narration, internal thought, or description of what happens next. Never say 'before we continue,' 'before we dive deeper,' 'great, I will get your email next,' 'let me think,' 'let me adjust that detail,' or similar unscripted filler. This rule applies after every answer, tool call, interruption, and resumed response.";
+const INLINE_UNSCRIPTED_FILLER = Object.freeze([
+  /\bbefore we continue\b/i,
+  /\bbefore we dive deeper\b/i,
+  /\bgreat[,.]?\s+i(?:'ll| will)\s+(?:get|collect|ask for)\s+(?:you|your|the caller'?s)?\s*email\b/i,
+  /\blet me\s+(?:think|adjust|figure|consider|decide|check|make a note|wrap)\b/i,
+  /\b(?:here'?s|this is)\s+what\s+(?:we|i)\s+(?:need|should|will)\s+(?:to\s+)?do next\b/i
+]);
+
 function inlineRequestsProhibitedInformation(value) {
   return INLINE_PROHIBITED_REQUESTS.some((pattern) => pattern.test(String(value || "")));
 }
@@ -222,6 +232,15 @@ function inlineRequestsProhibitedInformation(value) {
 function guardAssistantOutput(value) {
   if (inlineAssistantRateViolation(value)) return { allowed: false, code: "INTEREST_RATE_POLICY", replacement: interestRateResponse() };
   if (inlineRequestsProhibitedInformation(value)) return { allowed: false, code: "SENSITIVE_INFORMATION_REQUEST", replacement: "I don't need that sensitive information. Let's continue with the non-sensitive information needed for your DPA next step." };
+  if (INLINE_UNSCRIPTED_FILLER.some((pattern) => pattern.test(String(value || "")))) {
+    return {
+      allowed: false,
+      code: "UNSCRIPTED_FILLER",
+      replacement: null,
+      retryInstructions:
+        `${DAISY_NO_FILLER_RESPONSE_RULE} Restart with only the next approved scripted sentence or question. Do not repeat any part of the canceled response.`
+    };
+  }
   return { allowed: true, code: null, replacement: null };
 }
 
@@ -1293,7 +1312,7 @@ After the caller selects a routing option, complete CONTACT COLLECTION and EARLY
 
 CONTACT COLLECTION
 Then ask exactly:
-"Before we continue, may I have your first and last name?"
+"May I have your first and last name?"
 
 Parse and save the confirmed answer as first_name and last_name with save_inbound_caller_context. Do not ask separate first-name and last-name questions. Respond:
 Continue directly to phone-number confirmation without a standalone acknowledgment.
@@ -9230,7 +9249,13 @@ mediaServer.on("connection", (twilioSocket) => {
     pendingResponsePreservesQuestion = options.preservePendingQuestion === true;
     pendingResponseWaitingPromptKind = options.waitingPromptKind || null;
 const event = { type: "response.create" };
-if (options.response) event.response = options.response;
+event.response = {
+  ...(options.response || {}),
+  instructions: [
+    DAISY_NO_FILLER_RESPONSE_RULE,
+    options.response?.instructions
+  ].filter(Boolean).join("\n")
+};
 
 if (!sendToOpenAI(event)) {
   responseCreatePending = false;
@@ -10120,7 +10145,8 @@ return true;
               queueIfBusy: true,
               response: {
                 output_modalities: ["audio"],
-                instructions: `Say exactly: ${JSON.stringify(compliance.replacement)} Say nothing else.`
+                instructions: compliance.retryInstructions ||
+                  `Say exactly: ${JSON.stringify(compliance.replacement)} Say nothing else.`
               }
             });
             await appendAction(call.call_id, {
