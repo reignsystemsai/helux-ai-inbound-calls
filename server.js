@@ -9340,7 +9340,7 @@ return true;
     if (isInterestRateQuestion(transcript)) {
       const returnToQuestion = awaitingCustomerResponse && pendingQuestionText
         ? pendingQuestionType === "intent_discovery"
-          ? " Then ask the caller to explain in their own words why they are calling. Do not list or restate the routing choices."
+          ? " Then continue with the next applicable scripted step using the caller's already stated reason and saved context. Do not ask why they are calling again, and do not list or restate the routing choices."
           : ` Then ask this still-pending question once and stop: ${JSON.stringify(pendingQuestionText)}`
         : "";
       requestAssistantResponse({
@@ -9594,7 +9594,7 @@ return true;
         response: {
           output_modalities: ["audio"],
           instructions: intentDiscoveryPending
-            ? 'Ask the caller to explain in their own words why they are calling. Do not list or restate the routing choices.'
+            ? "Continue with the next applicable scripted step using the caller's already stated reason and saved context. Do not ask why they are calling again, and do not list or restate the routing choices."
             : `Repeat this pending question once, using the same meaning and no additional question: ${JSON.stringify(
                 pendingQuestionText
               )}`
@@ -9607,7 +9607,7 @@ return true;
       const returnToPendingQuestion =
         pendingQuestionType === "intent_discovery" &&
         !callerExplicitlyRequestsIntentOptions(transcript)
-          ? "Then ask the caller to explain in their own words why they are calling. Do not list or restate the routing choices."
+          ? "Then continue with the next applicable scripted step using the caller's already stated reason and saved context. Do not ask why they are calling again, and do not list or restate the routing choices."
           : `Then return naturally to this still-pending question, ask it once, and stop: ${JSON.stringify(
               pendingQuestionText
             )}`;
@@ -9656,7 +9656,7 @@ return true;
       suspendedQuestionState = null;
       const resumeInstruction =
         suspended.pending_question_type === "intent_discovery"
-          ? "Then ask the caller to explain in their own words why they are calling. Do not list or restate the routing choices."
+          ? "Then continue with the next applicable scripted step using the caller's already stated reason and saved context. Do not ask why they are calling again, and do not list or restate the routing choices."
           : `Then return to this previously pending question, ask it once, and stop: ${JSON.stringify(
               suspended.pending_question_text
             )}`;
