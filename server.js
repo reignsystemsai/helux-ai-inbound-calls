@@ -215,14 +215,13 @@ const INLINE_PROHIBITED_REQUESTS = Object.freeze([
   /card number/i, /password/i, /one[- ]time (?:passcode|code)|\botp\b/i
 ]);
 
-const DAISY_NO_FILLER_RESPONSE_RULE =
-  "HIGHEST PRIORITY OUTPUT LOCK: Speak only the requested exact line or the next approved scripted sentence or question. Never add a preface, acknowledgment, transition, narration, internal thought, or description of what happens next. Never say 'before we continue,' 'before we dive deeper,' 'great, I will get your email next,' 'let me think,' 'let me adjust that detail,' or similar unscripted filler. This rule applies after every answer, tool call, interruption, and resumed response.";
 const INLINE_UNSCRIPTED_FILLER = Object.freeze([
-  /\bbefore we continue\b/i,
   /\bbefore we dive deeper\b/i,
   /\bgreat[,.]?\s+i(?:'ll| will)\s+(?:get|collect|ask for)\s+(?:you|your|the caller'?s)?\s*email\b/i,
   /\blet me\s+(?:think|adjust|figure|consider|decide|check|make a note|wrap)\b/i,
-  /\b(?:here'?s|this is)\s+what\s+(?:we|i)\s+(?:need|should|will)\s+(?:to\s+)?do next\b/i
+  /\b(?:here'?s|this is)\s+what\s+(?:we|i)\s+(?:need|should|will)\s+(?:to\s+)?do next\b/i,
+  /\bi can point you\s+(?:to|where|how)\s+(?:to\s+)?apply\b/i,
+  /\bi can give you\s+(?:an?|the)\s+(?:general\s+)?example\b/i
 ]);
 
 function inlineRequestsProhibitedInformation(value) {
@@ -236,9 +235,7 @@ function guardAssistantOutput(value) {
     return {
       allowed: false,
       code: "UNSCRIPTED_FILLER",
-      replacement: null,
-      retryInstructions:
-        `${DAISY_NO_FILLER_RESPONSE_RULE} Restart with only the next approved scripted sentence or question. Do not repeat any part of the canceled response.`
+      replacement: null
     };
   }
   return { allowed: true, code: null, replacement: null };
@@ -1312,7 +1309,7 @@ After the caller selects a routing option, complete CONTACT COLLECTION and EARLY
 
 CONTACT COLLECTION
 Then ask exactly:
-"May I have your first and last name?"
+"Before we continue, may I have your first and last name?"
 
 Parse and save the confirmed answer as first_name and last_name with save_inbound_caller_context. Do not ask separate first-name and last-name questions. Respond:
 Continue directly to phone-number confirmation without a standalone acknowledgment.
@@ -8993,6 +8990,7 @@ mediaServer.on("connection", (twilioSocket) => {
   let assistantResponseActive = false;
   let responseCreatePending = false;
   let queuedResponseOptions = null;
+  let activeResponseRequestOptions = null;
   let pendingResponsePreservesQuestion = false;
   let activeResponsePreservesQuestion = false;
   let assistantResponseFinished = true;
@@ -9246,20 +9244,21 @@ mediaServer.on("connection", (twilioSocket) => {
     }
     responseCreatePending = true;
     assistantResponseFinished = false;
+    activeResponseRequestOptions = {
+      ...options,
+      ...(options.response
+        ? { response: { ...options.response } }
+        : {})
+    };
     pendingResponsePreservesQuestion = options.preservePendingQuestion === true;
     pendingResponseWaitingPromptKind = options.waitingPromptKind || null;
 const event = { type: "response.create" };
-event.response = {
-  ...(options.response || {}),
-  instructions: [
-    DAISY_NO_FILLER_RESPONSE_RULE,
-    options.response?.instructions
-  ].filter(Boolean).join("\n")
-};
+if (options.response) event.response = options.response;
 
 if (!sendToOpenAI(event)) {
   responseCreatePending = false;
   assistantResponseFinished = true;
+  activeResponseRequestOptions = null;
   pendingResponsePreservesQuestion = false;
   pendingResponseWaitingPromptKind = null;
   return false;
@@ -10141,14 +10140,32 @@ return true;
             if (streamSid) sendToTwilio({ event: "clear", streamSid });
             pendingMarkNames.clear();
             queuedResponseOptions = null;
-            requestAssistantResponse({
-              queueIfBusy: true,
-              response: {
-                output_modalities: ["audio"],
-                instructions: compliance.retryInstructions ||
-                  `Say exactly: ${JSON.stringify(compliance.replacement)} Say nothing else.`
-              }
-            });
+            if (compliance.code === "UNSCRIPTED_FILLER") {
+              const originalOptions = activeResponseRequestOptions || {};
+              const originalResponse = originalOptions.response || {};
+              requestAssistantResponse({
+                ...originalOptions,
+                queueIfBusy: true,
+                response: {
+                  ...originalResponse,
+                  output_modalities:
+                    originalResponse.output_modalities || ["audio"],
+                  instructions: [
+                    originalResponse.instructions,
+                    "Retry the same response using the existing script exactly. Start directly with the required scripted words. Do not add any preface, transition, internal thought, planning narration, or new offer. Do not change, expand, summarize, or reinterpret the approved talk track."
+                  ].filter(Boolean).join("\n")
+                }
+              });
+            } else {
+              requestAssistantResponse({
+                queueIfBusy: true,
+                response: {
+                  output_modalities: ["audio"],
+                  instructions:
+                    `Say exactly: ${JSON.stringify(compliance.replacement)} Say nothing else.`
+                }
+              });
+            }
             await appendAction(call.call_id, {
               action: "compliance_output_intercepted",
               success: true,
