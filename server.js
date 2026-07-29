@@ -1581,6 +1581,36 @@ function inboundIntentStateInstruction(call) {
   ].join("\n");
 }
 
+function inboundPurchaseLocationStateInstruction(call) {
+  const purchaseLocation = inboundPurchaseLocationLabel(call);
+  if (!purchaseLocation) {
+    return [
+      "SESSION PURCHASE LOCATION STATE",
+      "The purchase city and state have not yet been saved.",
+      "Ask the existing city-and-state question once at its approved point in the opening."
+    ].join("\n");
+  }
+  return [
+    "SESSION PURCHASE LOCATION STATE",
+    `The saved purchase location is ${purchaseLocation}. Location collection is complete.`,
+    "Do not ask for the purchase city or state again for any reason. Continue from the current conversation stage."
+  ].join("\n");
+}
+
+function inboundAssistanceMaximumStateInstruction(call) {
+  const alreadyMentioned =
+    call?.result?.assistance_maximum_mentioned === true;
+  return [
+    "SESSION ASSISTANCE-MAXIMUM STATE",
+    alreadyMentioned
+      ? "The approved statement that some programs may offer up to $100,000 has already been said during this call."
+      : "The approved statement that some programs may offer up to $100,000 has not been said during this call.",
+    alreadyMentioned
+      ? "Do not repeat that amount or statement again. Continue with the current talk track."
+      : "Use that approved statement no more than once, and only when it directly answers the caller's question."
+  ].join("\n");
+}
+
 function buildDaisyInboundInstructions(call) {
   const payload = call?.payload || {};
   const callerPhone = validE164Phone(call?.phone)
@@ -1593,7 +1623,12 @@ function buildDaisyInboundInstructions(call) {
     .replaceAll("{caller_phone}", callerPhone)
     .replaceAll("{caller_name}", callerName)
     .replaceAll("{lead_source}", leadSource);
-  return `${inboundIntentStateInstruction(call)}\n\n${script}`;
+  return [
+    inboundIntentStateInstruction(call),
+    inboundPurchaseLocationStateInstruction(call),
+    inboundAssistanceMaximumStateInstruction(call),
+    script
+  ].join("\n\n");
 }
 
 const DOUGLAS_DAISY_SCRIPT = String.raw`
@@ -6441,6 +6476,7 @@ function publicCallResult(result = {}) {
     "readiness_application_started",
     "readiness_application_completed",
     "application_status",
+    "assistance_maximum_mentioned",
     "follow_up_date",
     "follow_up_time",
     "follow_up_timezone",
@@ -8991,6 +9027,9 @@ mediaServer.on("connection", (twilioSocket) => {
   let responseCreatePending = false;
   let queuedResponseOptions = null;
   let activeResponseRequestOptions = null;
+  let activeResponseIncludesAssistanceMaximum = false;
+  let assistanceMaximumMentioned =
+    call?.result?.assistance_maximum_mentioned === true;
   let pendingResponsePreservesQuestion = false;
   let activeResponsePreservesQuestion = false;
   let assistantResponseFinished = true;
@@ -10122,6 +10161,7 @@ return true;
           }
           activeResponsePreservesQuestion = pendingResponsePreservesQuestion;
           pendingResponsePreservesQuestion = false;
+          activeResponseIncludesAssistanceMaximum = false;
           activeResponseWaitingPromptKind = pendingResponseWaitingPromptKind;
           pendingResponseWaitingPromptKind = null;
           assistantTranscriptBuffer = "";
@@ -10133,16 +10173,67 @@ return true;
 
         if (event.type === "response.output_audio_transcript.delta") {
           assistantTranscriptBuffer += event.delta || "";
-          const compliance = guardAssistantOutput(assistantTranscriptBuffer);
+          const includesAssistanceMaximum =
+            /\bup to\s+(?:\$\s*)?(?:100(?:,\s*|\s*)000|one hundred thousand)(?:\s+dollars?)?\b/i.test(
+              assistantTranscriptBuffer
+            );
+          const duplicateAssistanceMaximum =
+            includesAssistanceMaximum &&
+            assistanceMaximumMentioned &&
+            !activeResponseIncludesAssistanceMaximum;
+          if (
+            includesAssistanceMaximum &&
+            !assistanceMaximumMentioned &&
+            !activeResponseIncludesAssistanceMaximum
+          ) {
+            activeResponseIncludesAssistanceMaximum = true;
+            assistanceMaximumMentioned = true;
+            await mergeCallResult(call.call_id, {
+              assistance_maximum_mentioned: true
+            });
+            call = {
+              ...call,
+              result: {
+                ...(call.result || {}),
+                assistance_maximum_mentioned: true
+              }
+            };
+          }
+          const duplicatePurchaseLocationQuestion =
+            Boolean(inboundPurchaseLocationLabel(call)) &&
+            /\bwhat city and state\b.{0,100}\bpurchase\b/i.test(
+              assistantTranscriptBuffer
+            );
+          const compliance = duplicatePurchaseLocationQuestion
+            ? {
+                allowed: false,
+                code: "DUPLICATE_PURCHASE_LOCATION_QUESTION",
+                replacement: null
+              }
+            : duplicateAssistanceMaximum
+              ? {
+                  allowed: false,
+                  code: "DUPLICATE_ASSISTANCE_MAXIMUM",
+                  replacement: null
+                }
+            : guardAssistantOutput(assistantTranscriptBuffer);
           if (!compliance.allowed && !complianceRecoveryActive) {
             complianceRecoveryActive = true;
             sendToOpenAI({ type: "response.cancel" });
             if (streamSid) sendToTwilio({ event: "clear", streamSid });
             pendingMarkNames.clear();
             queuedResponseOptions = null;
-            if (compliance.code === "UNSCRIPTED_FILLER") {
+            if (
+              compliance.code === "UNSCRIPTED_FILLER" ||
+              compliance.code === "DUPLICATE_PURCHASE_LOCATION_QUESTION" ||
+              compliance.code === "DUPLICATE_ASSISTANCE_MAXIMUM"
+            ) {
               const originalOptions = activeResponseRequestOptions || {};
               const originalResponse = originalOptions.response || {};
+              const duplicateLocationBlocked =
+                compliance.code === "DUPLICATE_PURCHASE_LOCATION_QUESTION";
+              const duplicateAssistanceMaximumBlocked =
+                compliance.code === "DUPLICATE_ASSISTANCE_MAXIMUM";
               requestAssistantResponse({
                 ...originalOptions,
                 queueIfBusy: true,
@@ -10150,10 +10241,14 @@ return true;
                   ...originalResponse,
                   output_modalities:
                     originalResponse.output_modalities || ["audio"],
-                  instructions: [
-                    originalResponse.instructions,
-                    "Retry the same response using the existing script exactly. Start directly with the required scripted words. Do not add any preface, transition, internal thought, planning narration, or new offer. Do not change, expand, summarize, or reinterpret the approved talk track."
-                  ].filter(Boolean).join("\n")
+                  instructions: duplicateLocationBlocked
+                    ? "The caller's purchase city and state are already saved. Do not ask for either value again. Continue from the current conversation stage with only the next exact approved scripted line."
+                    : duplicateAssistanceMaximumBlocked
+                      ? "The approved assistance maximum has already been stated during this call. Do not repeat the amount. Continue from the current conversation stage with only the next exact approved scripted line."
+                      : [
+                        originalResponse.instructions,
+                        "Retry the same response using the existing script exactly. Start directly with the required scripted words. Do not add any preface, transition, internal thought, planning narration, or new offer. Do not change, expand, summarize, or reinterpret the approved talk track."
+                        ].filter(Boolean).join("\n")
                 }
               });
             } else {

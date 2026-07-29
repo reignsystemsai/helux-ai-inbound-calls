@@ -69,3 +69,43 @@ test("the no-filler lock filters output without changing the script", () => {
     /Then ask exactly:\s*"Before we continue, may I have your first and last name\?"/
   );
 });
+
+test("saved purchase location prevents a repeated city and state question", () => {
+  const serverSource = fs.readFileSync(
+    path.join(__dirname, "..", "server.js"),
+    "utf8"
+  );
+
+  assert.match(
+    serverSource,
+    /function inboundPurchaseLocationStateInstruction[\s\S]{0,1200}Location collection is complete/
+  );
+  assert.match(
+    serverSource,
+    /duplicatePurchaseLocationQuestion[\s\S]{0,800}DUPLICATE_PURCHASE_LOCATION_QUESTION/
+  );
+  assert.match(
+    serverSource,
+    /purchase city and state are already saved[\s\S]{0,200}Do not ask for either value again/i
+  );
+});
+
+test("the assistance maximum can be spoken only once per call", () => {
+  const serverSource = fs.readFileSync(
+    path.join(__dirname, "..", "server.js"),
+    "utf8"
+  );
+
+  assert.match(
+    serverSource,
+    /function inboundAssistanceMaximumStateInstruction[\s\S]{0,1200}Do not repeat that amount or statement again/
+  );
+  assert.match(
+    serverSource,
+    /assistanceMaximumMentioned[\s\S]{0,1200}assistance_maximum_mentioned: true/
+  );
+  assert.match(
+    serverSource,
+    /duplicateAssistanceMaximum[\s\S]{0,1000}DUPLICATE_ASSISTANCE_MAXIMUM/
+  );
+});
