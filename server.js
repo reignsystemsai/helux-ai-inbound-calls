@@ -1233,6 +1233,19 @@ function confirmedConsent(payload) {
   return ["confirmed", "granted", "approved", "yes"].includes(status);
 }
 
+const DAISY_INBOUND_SCRIPT_FOLLOW_OVERRIDE = [
+  "SCRIPT FOLLOW OVERRIDE — HIGHEST PRIORITY",
+  "The DAISY INBOUND DPA CALL SCRIPT below is the only authorized inbound talk track.",
+  "Speak quoted dialogue exactly as written, replacing only bracketed placeholders with saved session values.",
+  "Use unquoted instructions only to select the next applicable quoted line. Never speak or paraphrase the instructions.",
+  "Never invent, expand, summarize, preface, bridge, narrate, or substitute wording that is not in the approved script.",
+  "Saved session state determines which steps are complete. Skip completed steps, but never skip an incomplete required step.",
+  "After a tool call, interruption, canceled filler response, or resumed connection, continue with the next incomplete approved script line.",
+  "If any other instruction conflicts with this override, this override and the saved session state control."
+].join("\n");
+const DAISY_RESPONSE_SCRIPT_LOCK =
+  "SCRIPT LOCK: Follow the active inbound script exactly. Do not add, replace, paraphrase, or omit spoken wording.";
+
 const DAISY_INBOUND_TEST_SCRIPT = `
 DAISY INBOUND DPA CALL SCRIPT
 
@@ -1686,6 +1699,7 @@ function buildDaisyInboundInstructions(call) {
     .replaceAll("{caller_name}", callerName)
     .replaceAll("{lead_source}", leadSource);
   return [
+    DAISY_INBOUND_SCRIPT_FOLLOW_OVERRIDE,
     inboundIntentStateInstruction(call),
     inboundPurchaseLocationStateInstruction(call),
     inboundAssistanceMaximumStateInstruction(call),
@@ -9355,7 +9369,15 @@ mediaServer.on("connection", (twilioSocket) => {
     pendingResponsePreservesQuestion = options.preservePendingQuestion === true;
     pendingResponseWaitingPromptKind = options.waitingPromptKind || null;
 const event = { type: "response.create" };
-if (options.response) event.response = options.response;
+if (options.response) {
+  event.response = {
+    ...options.response,
+    instructions: [
+      options.response.instructions,
+      DAISY_RESPONSE_SCRIPT_LOCK
+    ].filter(Boolean).join("\n")
+  };
+}
 
 if (!sendToOpenAI(event)) {
   responseCreatePending = false;

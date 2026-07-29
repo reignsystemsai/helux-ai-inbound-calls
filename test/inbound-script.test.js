@@ -87,6 +87,35 @@ test("the no-filler lock filters output without changing the script", () => {
   );
 });
 
+test("one script-follow override controls every inbound response path", () => {
+  const serverSource = fs.readFileSync(
+    path.join(__dirname, "..", "server.js"),
+    "utf8"
+  );
+
+  assert.equal(
+    (serverSource.match(/const DAISY_INBOUND_TEST_SCRIPT\s*=/g) || []).length,
+    1,
+    "inbound Daisy must have one authoritative script"
+  );
+  assert.match(
+    serverSource,
+    /const DAISY_INBOUND_SCRIPT_FOLLOW_OVERRIDE\s*=/
+  );
+  assert.match(
+    serverSource,
+    /return \[\s*DAISY_INBOUND_SCRIPT_FOLLOW_OVERRIDE,[\s\S]{0,500}script\s*\]\.join/
+  );
+  assert.match(
+    serverSource,
+    /if \(options\.response\) \{[\s\S]{0,500}DAISY_RESPONSE_SCRIPT_LOCK/
+  );
+  assert.doesNotMatch(
+    serverSource,
+    /const event = \{ type: "response\.create" \};\s*event\.response\s*=/
+  );
+});
+
 test("saved purchase location prevents a repeated city and state question", () => {
   const serverSource = fs.readFileSync(
     path.join(__dirname, "..", "server.js"),
