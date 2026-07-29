@@ -764,6 +764,8 @@ const INBOUND_MONDAY = Object.freeze({
     lastName: "text_mm5ffrc0",
     city: "text_mm5qw2k2",
     state: "text_mm5q3gq4",
+    estimatedHomePrice: "text_mm5qxf89",
+    purchaseTimeframe: "text_mm5q63c0",
     email: "email_mm5f7560",
     phoneNumber: "phone_mm5fdqn5",
     creditScore: "text_mm5j48bj",
@@ -1323,9 +1325,9 @@ Use the caller's answer to continue naturally.
 
 IF ASKED HOW DOWN PAYMENT ASSISTANCE WORKS
 Say:
-"I can give you a general example of how some down payment assistance programs work, but please keep in mind that this is only an example. Specific programs and assistance amounts depend on your eligibility, which will be reviewed as you move through the process."
+"Please keep in mind that this is only a general example. Specific programs and assistance amounts depend on your eligibility, which will be reviewed as you move through the process."
 
-"For example, let's say someone qualifies for assistance equal to five percent of the home's purchase price."
+"Let's say someone qualifies for assistance equal to five percent of the home's purchase price."
 
 "Five percent of a $400,000 home would be $20,000. Depending on the program, that money may be used toward the down payment and possibly some closing costs."
 
@@ -1521,6 +1523,7 @@ Daisy must never:
 - Over-question the caller.
 - Ask multiple questions in one turn.
 - Add filler, narration, transition language, or internal-process commentary.
+- Say "let me think this through," "let me think," or narrate a calculation before responding.
 
 Daisy should answer direct questions briefly, then continue immediately with the next necessary scripted sentence or question.
 `.trim();
@@ -2902,6 +2905,20 @@ function pendingQuestionType(value) {
   }
   if (/creditscore|score.*credit/.test(text)) return "credit_score";
   if (
+    /howmuch.*homes?.*(?:considering|looking)|homes?.*(?:considering|looking).*howmuch/.test(
+      text
+    )
+  ) {
+    return "estimated_home_price";
+  }
+  if (
+    /howsoon.*(?:becomeahomeowner|buy|purchase)|when.*(?:buy|purchase).*home/.test(
+      text
+    )
+  ) {
+    return "homebuying_timeline";
+  }
+  if (
     /annual.*household.*income|household.*income|income.*beforetax/.test(text)
   ) {
     return "annual_household_income";
@@ -3547,6 +3564,10 @@ function normalizeInboundAnnualIncome(value) {
   }
   const income = total + current;
   return recognized && income > 0 ? String(income) : "";
+}
+
+function normalizeInboundEstimatedHomePrice(value) {
+  return normalizeInboundAnnualIncome(value);
 }
 
 function cleanInboundContactValue(value, maximumLength = 320) {
@@ -4232,6 +4253,15 @@ function inboundCallSnapshot(call, overrides = {}) {
       overrides.state,
       purchaseLocation?.state
     ),
+    estimated_home_price: normalizeInboundEstimatedHomePrice(
+      result.estimated_home_price || overrides.estimated_home_price
+    ),
+    purchase_timeframe: firstInboundContactValue(
+      500,
+      result.homebuying_timeline,
+      result.purchase_timeframe,
+      overrides.purchase_timeframe
+    ),
     phone: normalizePhone(
       result.phone || result.phone_number || call?.phone || overrides.phone ||
         payload.phone_number || payload.caller_phone
@@ -4407,6 +4437,8 @@ async function saveInboundCallSummary(data = {}) {
         last_name: snapshot.last_name,
         purchase_city: snapshot.city,
         purchase_state: snapshot.state,
+        estimated_home_price: snapshot.estimated_home_price,
+        purchase_timeframe: snapshot.purchase_timeframe,
         phone: snapshot.phone,
         email: snapshot.email,
         credit_score: snapshot.credit_score,
@@ -4610,6 +4642,8 @@ async function syncInboundMondayCaller(call) {
             last_name: initialData.last_name,
             purchase_city: initialData.city,
             purchase_state: initialData.state,
+            estimated_home_price: initialData.estimated_home_price,
+            purchase_timeframe: initialData.purchase_timeframe,
             phone: initialData.phone,
             email: initialData.email,
             credit_score: initialData.credit_score,
@@ -7105,12 +7139,13 @@ async function executeInboundToolUnlocked(call, name, args) {
     if (suppliedEmail && !email) {
       return { success: false, error: "A valid email address is required." };
     }
-    const estimatedHomePriceNumber = Number(
-      String(safeArgs.estimated_home_price ?? "").replace(/[$,\s]/g, "")
+    const normalizedEstimatedHomePrice = normalizeInboundEstimatedHomePrice(
+      safeArgs.estimated_home_price
     );
+    const estimatedHomePriceNumber = Number(normalizedEstimatedHomePrice);
     const estimatedHomePrice = Number.isFinite(estimatedHomePriceNumber) && estimatedHomePriceNumber > 0
       ? estimatedHomePriceNumber
-      : cleanText(safeArgs.estimated_home_price, 100);
+      : null;
     const estimatedFivePercentAssistance = Number.isFinite(estimatedHomePriceNumber) && estimatedHomePriceNumber > 0
       ? Number((estimatedHomePriceNumber * 0.05).toFixed(2))
       : Number.isFinite(Number(safeArgs.estimated_five_percent_assistance))
@@ -9421,6 +9456,8 @@ return true;
       [
         "credit_score",
         "annual_household_income",
+        "estimated_home_price",
+        "homebuying_timeline",
         "tax_return_status",
         "employment_history"
       ].includes(String(pendingQuestionType || ""))
@@ -9429,22 +9466,30 @@ return true;
         ? normalizeInboundCreditScore(transcript)
         : pendingQuestionType === "annual_household_income"
           ? normalizeInboundAnnualIncome(transcript)
-          : pendingQuestionType === "tax_return_status"
-            ? normalizeInboundTaxReturnStatus(transcript)
-            : normalizeExplicitYesNo(transcript) === true
-              ? "Employed During Past 2 Years"
-              : normalizeExplicitYesNo(transcript) === false
-                ? "Not Employed During Past 2 Years"
-                : "";
+          : pendingQuestionType === "estimated_home_price"
+            ? normalizeInboundEstimatedHomePrice(transcript)
+            : pendingQuestionType === "homebuying_timeline"
+              ? cleanInboundContactValue(transcript, 500)
+              : pendingQuestionType === "tax_return_status"
+                ? normalizeInboundTaxReturnStatus(transcript)
+                : normalizeExplicitYesNo(transcript) === true
+                  ? "Employed During Past 2 Years"
+                  : normalizeExplicitYesNo(transcript) === false
+                    ? "Not Employed During Past 2 Years"
+                    : "";
       if (recognizedValue) {
         const activeCall = (await getCallById(call.call_id)) || call;
         const toolArgs = pendingQuestionType === "credit_score"
           ? { estimated_credit_score: recognizedValue }
           : pendingQuestionType === "annual_household_income"
             ? { annual_household_income: recognizedValue }
-            : pendingQuestionType === "tax_return_status"
-              ? { two_year_tax_filing_status: recognizedValue }
-              : { two_year_employment_history: recognizedValue };
+            : pendingQuestionType === "estimated_home_price"
+              ? { estimated_home_price: recognizedValue }
+              : pendingQuestionType === "homebuying_timeline"
+                ? { homebuying_timeline: recognizedValue }
+                : pendingQuestionType === "tax_return_status"
+                  ? { two_year_tax_filing_status: recognizedValue }
+                  : { two_year_employment_history: recognizedValue };
         const saved = await executeInboundTool(
           activeCall,
           "save_inbound_caller_context",

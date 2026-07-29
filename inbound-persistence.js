@@ -257,6 +257,16 @@ function buildInboundMondayUpdateValues({
     ["last_name", columns.lastName, ["Last Name"]],
     ["city", columns.city, ["City"]],
     ["state", columns.state, ["State"]],
+    [
+      "estimated_home_price",
+      columns.estimatedHomePrice,
+      ["Estimate_home_price", "Estimated Home Price", "Estimate Home Price"]
+    ],
+    [
+      "purchase_timeframe",
+      columns.purchaseTimeframe,
+      ["Purchase_timeframe", "Purchase Timeframe"]
+    ],
     ["credit_score", columns.creditScore, ["Credit Score"]],
     [
       "tax_return_status",

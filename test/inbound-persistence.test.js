@@ -231,6 +231,8 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
     lastName: "text_mm5ffrc0",
     city: "text_mm5qw2k2",
     state: "text_mm5q3gq4",
+    estimatedHomePrice: "text_mm5qxf89",
+    purchaseTimeframe: "text_mm5q63c0",
     email: "email_mm5f7560",
     creditScore: "text_mm5j48bj",
     annualIncome: "",
@@ -245,6 +247,16 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
       { id: "text_mm5fsrc0", title: "Last Name", type: "text" },
       { id: columns.city, title: "City", type: "text" },
       { id: columns.state, title: "State", type: "text" },
+      {
+        id: columns.estimatedHomePrice,
+        title: "Estimate_home_price",
+        type: "text"
+      },
+      {
+        id: columns.purchaseTimeframe,
+        title: "Purchase_timeframe",
+        type: "text"
+      },
       { id: columns.email, type: "email" },
       { id: columns.creditScore, type: "text" },
       { id: "numbers_mm5annual", title: "Annual Income", type: "numbers" },
@@ -266,6 +278,8 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
       last_name: "Doe",
       city: "Atlanta",
       state: "Georgia",
+      estimated_home_price: "400000",
+      purchase_timeframe: "Within six months",
       email: "jane@example.com",
       credit_score: "690",
       annual_household_income: "$70,000",
@@ -283,6 +297,8 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
     text_mm5fsrc0: "Doe",
     text_mm5qw2k2: "Atlanta",
     text_mm5q3gq4: "Georgia",
+    text_mm5qxf89: "400000",
+    text_mm5q63c0: "Within six months",
     text_mm5j48bj: "690",
     numbers_mm5annual: "70000",
     text_mm5jx81q: "2 Years Filed",
