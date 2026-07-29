@@ -255,6 +255,8 @@ function buildInboundMondayUpdateValues({
   const textFields = [
     ["first_name", columns.firstName, ["First Name"]],
     ["last_name", columns.lastName, ["Last Name"]],
+    ["city", columns.city, ["City"]],
+    ["state", columns.state, ["State"]],
     ["credit_score", columns.creditScore, ["Credit Score"]],
     [
       "tax_return_status",

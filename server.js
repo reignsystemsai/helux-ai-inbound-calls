@@ -762,6 +762,8 @@ const INBOUND_MONDAY = Object.freeze({
 
     firstName: "text_mm5fx7z9",
     lastName: "text_mm5ffrc0",
+    city: "text_mm5qw2k2",
+    state: "text_mm5q3gq4",
     email: "email_mm5f7560",
     phoneNumber: "phone_mm5fdqn5",
     creditScore: "text_mm5j48bj",
@@ -1245,10 +1247,10 @@ ADDITIVE CONVERSATION STRATEGY V2.0
 
 INTENT ROUTING
 - Use the exact approved opening below.
-- If the caller clearly explains the reason for calling, classify the intent internally and address it directly.
-- Save the initial classification with save_inbound_caller_context before continuing contact collection.
-- If the caller's reason remains unclear, ask one routing question:
-"To make sure I point you in the right direction, tell me which best describes why you're calling today: you've already started the Readiness Assessment, you'd like to know how to get started, you'd like to know if you qualify or how much assistance may be available, or something else?"
+- After the caller first responds to the opening, collect the city and state where they would like to purchase before classifying intent or answering the caller's initial question.
+- After the city and state are saved, ask the routing question exactly once:
+"Excellent. To make sure we head in the right direction, tell me which best describes why you're calling today: you've already started the Readiness Assessment, you'd like to know how to get started, you'd like to know if you qualify or how much assistance may be available, or something else?"
+- Save the caller's selected classification with save_inbound_caller_context before continuing contact collection.
 - Use the answer only to choose the relevant existing path. Do not read the routing choices after the caller has already stated a clear purpose.
 
 READINESS-ASSESSMENT MENTION LIMIT
@@ -1276,7 +1278,12 @@ OPENING
 Say exactly:
 "Thank you for calling the DPA Help Center. This is Daisy speaking. How can I help you?"
 
-Allow the caller to explain why they are calling. Respond directly to their question or concern before collecting information. Appropriate brief responses include:
+Listen to the caller's complete response. Then ask exactly:
+"Sure, to help me better serve you, what city and state would you like to purchase a home in?"
+
+Save the caller's exact meaningful answer as purchase_area. Do not infer, guess, or substitute a location. After purchase_area is saved, ask the exact routing question in INTENT ROUTING.
+
+After the caller selects a routing option, address their question or concern using the relevant talk track. Appropriate brief responses include:
 "Some down payment assistance programs may help with the down payment and possibly some closing costs."
 "Eligibility depends on the specific program and your overall homebuyer-readiness profile."
 
@@ -1285,18 +1292,13 @@ Then ask exactly:
 "Before we continue, may I have your first and last name?"
 
 Parse and save the confirmed answer as first_name and last_name with save_inbound_caller_context. Do not ask separate first-name and last-name questions. Respond:
-Continue directly to phone-number confirmation without a standalone acknowledgment.
+Continue directly to email collection without a standalone acknowledgment.
 
-PHONE-NUMBER CONFIRMATION
-Use the inbound caller ID when available and ask:
-"I have the phone number you're calling from ending in [Last Four Digits]. Is that the best number to reach you?"
+EARLY EMAIL COLLECTION
+Use the inbound caller ID as phone_number without asking the caller to confirm whether it is the best number. Then ask exactly:
+"I have the phone number you're calling from ending in [Last Four Digits], and by the way, what is a good email for you?"
 
-If yes, confirm and save phone_number, then immediately return to the caller's question or move the call forward.
-
-If no, ask:
-"What is the best number to reach you?"
-
-Save the corrected phone_number. Do not ask for the email immediately after the phone number.
+Save email and repeat it back once for confirmation. Do not ask for the email again later in the call unless the caller corrects it or specifically says a different email was used for an existing application. Then immediately return to the caller's question or move the call forward.
 
 GENERAL DPA RESPONSE AMMUNITION
 Answer only the caller's actual question. Do not recite every approved response.
@@ -1348,7 +1350,9 @@ BASIC READINESS CONVERSATION
 If the caller says yes, say:
 "Keep in mind these are only general guidelines, and specific program requirements may vary."
 
-"Many programs may look for a credit score around 640 or higher, approximately $70,000 or more in annual household income, and two years of filed tax returns."
+"Many programs may look for a credit score around 640 or higher, approximately $70,000 or more in annual household income, two years of filed federal tax returns, and two years of employment history."
+
+"The employment history does not have to be with the same employer, but you generally need to have been employed during the past two years."
 
 Complete every approved readiness question even when an earlier answer falls below a general guideline. Do not react negatively to an individual answer or give a readiness response before all approved readiness questions are complete.
 
@@ -1366,6 +1370,11 @@ Then ask:
 "Have you filed your federal tax returns for the last two years?"
 
 Save two_year_tax_filing_status.
+
+Then ask:
+"Have you been employed during the past two years?"
+
+Save two_year_employment_history.
 
 READINESS RESPONSE
 Give the readiness response only after the caller has answered all approved readiness questions. Never describe the caller as unqualified, denied, or ineligible, and never present the general guidelines as a formal eligibility decision.
@@ -1406,7 +1415,7 @@ If no, say:
 "Complete it next because that is where the readiness-review process begins."
 
 If yes, say:
-Search existing records silently with lookup_existing_outbound_applicant using the confirmed phone number and name. Do not narrate the search. Ask for email only when it is needed to locate or verify the record:
+Search existing records silently with lookup_existing_outbound_applicant using the inbound phone number, confirmed name, and saved email. Do not narrate the search. Only ask the following question if the caller says a different email was used for the application:
 "What email address did you use on the application?"
 
 Save email and repeat it back for confirmation. If a record is found, provide only the approved customer-facing status returned by the lookup. Never invent a record or status.
@@ -1417,10 +1426,10 @@ If no record is found, say:
 "It may not have been fully submitted, so I recommend returning to dpahelpcenter.com and completing the readiness application again."
 
 EMAIL COLLECTION WHEN NO APPLICATION SEARCH IS NEEDED
-If the caller has not completed an application, collect the email later in the conversation, after providing useful information and explaining the next step. Ask:
+If no valid email was captured during EARLY EMAIL COLLECTION, ask:
 "What is the best email address for our team to have on file?"
 
-Save email and repeat it back for confirmation. Do not promise to send a text link or email unless that capability actually exists.
+Save email and repeat it back for confirmation. If a valid email is already saved, do not ask for it again. Do not promise to send a text link or email unless that capability actually exists.
 
 INTEREST-RATE GUARDRAIL
 Never discuss interest rates in any shape, form, or fashion. Do not discuss rates, APR, rate locks, points, fixed rates, adjustable rates, payment estimates involving rates, or whether rates may rise or fall.
@@ -1442,6 +1451,29 @@ Near the end ask:
 
 If the caller has another legitimate question, answer it completely using the approved response ammunition. Do not redirect, repeat a readiness recommendation, or restart the full qualification sequence. Confirm the substantive answer helped only when useful, then continue naturally. Once the caller confirms the major questions are answered, continue to the existing follow-up scheduling flow.
 
+REQUIRED PRE-CLOSING READINESS CHECK
+Before moving to FOLLOW-UP SCHEDULING, check whether estimated_credit_score, annual_household_income, two_year_tax_filing_status, and two_year_employment_history have already been collected during this call.
+
+If all four values are already saved, do not repeat any readiness explanation or question. Continue directly to FOLLOW-UP SCHEDULING.
+
+If one or more values are missing, say:
+"[First Name], while I have you on the line, before I let you go, let me share a few quick details about what some programs may be looking for."
+
+Then say:
+"Keep in mind these are only general guidelines, and specific program requirements may vary."
+
+"Many programs may look for a credit score around 640 or higher, approximately $70,000 or more in annual household income, two years of filed federal tax returns, and two years of employment history."
+
+"The employment history does not have to be with the same employer, but you generally need to have been employed during the past two years."
+
+Ask only the questions whose saved values are still missing, one at a time:
+"About what would you say your credit score is?"
+"And approximately what is your annual household income before taxes?"
+"Have you filed your federal tax returns for the last two years?"
+"Have you been employed during the past two years?"
+
+Save each answer with save_inbound_caller_context before asking the next question. Never repeat a qualification question whose value is already saved. After all four values are collected, give the appropriate existing READINESS RESPONSE, then continue directly to FOLLOW-UP SCHEDULING.
+
 FOLLOW-UP SCHEDULING
 Once the caller confirms there are no more questions, ask:
 "When would be a good time for me to check back with you regarding starting or completing the readiness application on our website?"
@@ -1457,7 +1489,7 @@ If the caller does not want a follow-up, say:
 Use create_inbound_follow_up with follow_up_declined true.
 
 CALL SUMMARY
-Before complete_call, save a concise factual call_summary containing only available information, including the caller's name, primary reason, estimated home price, homebuying timeline, estimated credit score, annual household income, tax-filing status, website visit, application status, email when collected, follow-up schedule or decline, and key questions answered. Save an appropriate call_outcome. Do not fill missing fields with assumptions.
+Before complete_call, save a concise factual call_summary containing only available information, including the caller's name, primary reason, estimated home price, homebuying timeline, estimated credit score, annual household income, tax-filing status, employment history, website visit, application status, email when collected, follow-up schedule or decline, and key questions answered. Save an appropriate call_outcome. Do not fill missing fields with assumptions.
 
 CLOSING
 After the follow-up is scheduled or declined and the summary is saved, use the existing complete_call flow. The approved closing is:
@@ -2204,6 +2236,7 @@ const INBOUND_TOOLS = Object.freeze([
       homebuying_timeline: { type: ["string", "null"] },
       estimated_credit_score: { type: ["string", "number", "null"] },
       annual_household_income: { type: ["string", "number", "null"] },
+      two_year_employment_history: { type: ["string", "null"] },
       two_year_tax_filing_status: {
         type: ["string", "null"],
         enum: ["yes", "one_year", "not_filed", "not_sure", null]
@@ -2871,11 +2904,35 @@ function pendingQuestionType(value) {
   if (/filed.*taxreturns?|taxreturns?.*lasttwoyears/.test(text)) {
     return "tax_return_status";
   }
+  if (/employed.*(?:past|last).*twoyears|employmenthistory|workhistory/.test(text)) {
+    return "employment_history";
+  }
   if (/timeframe|timeline|purchase|buy|income|credit|employment|tax/.test(text)) {
     return "qualification";
   }
   return "general_question";
 }
+
+const INBOUND_US_STATE_VARIANTS = Object.freeze([
+  ["Alabama", "AL"], ["Alaska", "AK"], ["Arizona", "AZ"],
+  ["Arkansas", "AR"], ["California", "CA"], ["Colorado", "CO"],
+  ["Connecticut", "CT"], ["Delaware", "DE"], ["Florida", "FL"],
+  ["Georgia", "GA"], ["Hawaii", "HI"], ["Idaho", "ID"],
+  ["Illinois", "IL"], ["Indiana", "IN"], ["Iowa", "IA"],
+  ["Kansas", "KS"], ["Kentucky", "KY"], ["Louisiana", "LA"],
+  ["Maine", "ME"], ["Maryland", "MD"], ["Massachusetts", "MA"],
+  ["Michigan", "MI"], ["Minnesota", "MN"], ["Mississippi", "MS"],
+  ["Missouri", "MO"], ["Montana", "MT"], ["Nebraska", "NE"],
+  ["Nevada", "NV"], ["New Hampshire", "NH"], ["New Jersey", "NJ"],
+  ["New Mexico", "NM"], ["New York", "NY"], ["North Carolina", "NC"],
+  ["North Dakota", "ND"], ["Ohio", "OH"], ["Oklahoma", "OK"],
+  ["Oregon", "OR"], ["Pennsylvania", "PA"], ["Rhode Island", "RI"],
+  ["South Carolina", "SC"], ["South Dakota", "SD"], ["Tennessee", "TN"],
+  ["Texas", "TX"], ["Utah", "UT"], ["Vermont", "VT"],
+  ["Virginia", "VA"], ["Washington", "WA"], ["West Virginia", "WV"],
+  ["Wisconsin", "WI"], ["Wyoming", "WY"],
+  ["District of Columbia", "DC"]
+]);
 
 function exactMeaningfulPurchaseArea(value) {
   const area = cleanText(value, 1000);
@@ -2888,6 +2945,41 @@ function exactMeaningfulPurchaseArea(value) {
     return null;
   }
   return cleanText(area.replace(/[.!?]+$/, ""), 1000);
+}
+
+function parseInboundPurchaseLocation(value) {
+  const purchaseArea = exactMeaningfulPurchaseArea(value);
+  if (!purchaseArea) return null;
+  const cleaned = purchaseArea
+    .replace(
+      /^(?:i(?:'d| would)?\s+(?:like|want)\s+to\s+(?:buy|purchase)(?:\s+a\s+home)?\s+|i(?:'m| am)\s+looking\s+)(?:in|around)\s+/i,
+      ""
+    )
+    .replace(/^(?:in|around|the city of)\s+/i, "")
+    .trim();
+  const variants = INBOUND_US_STATE_VARIANTS
+    .flatMap(([name, abbreviation]) => [name, abbreviation])
+    .sort((left, right) => right.length - left.length);
+  const commaParts = cleaned
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (commaParts.length >= 2) {
+    const state = commaParts.at(-1);
+    const knownState = variants.some(
+      (variant) => variant.toLowerCase() === state.toLowerCase()
+    );
+    const city = commaParts.slice(0, -1).join(", ").trim();
+    return knownState && city ? { city, state } : null;
+  }
+  const lower = cleaned.toLowerCase();
+  for (const variant of variants) {
+    const suffix = ` ${variant.toLowerCase()}`;
+    if (!lower.endsWith(suffix)) continue;
+    const city = cleaned.slice(0, -suffix.length).trim();
+    if (city) return { city, state: cleaned.slice(-variant.length) };
+  }
+  return null;
 }
 
 function normalizeCustomerUtterance(value) {
@@ -4038,6 +4130,9 @@ async function createInboundFollowUpRecord(itemId, reason) {
 function inboundCallSnapshot(call, overrides = {}) {
   const payload = call?.payload || {};
   const result = call?.result || {};
+  const purchaseLocation = parseInboundPurchaseLocation(
+    result.purchase_area || overrides.purchase_area
+  );
   const suppliedName = normalizeInboundFullName(
     firstInboundContactValue(
       160,
@@ -4086,6 +4181,18 @@ function inboundCallSnapshot(call, overrides = {}) {
     full_name: fullName,
     first_name: firstName,
     last_name: lastName,
+    city: firstInboundContactValue(
+      160,
+      result.purchase_city,
+      overrides.city,
+      purchaseLocation?.city
+    ),
+    state: firstInboundContactValue(
+      100,
+      result.purchase_state,
+      overrides.state,
+      purchaseLocation?.state
+    ),
     phone: normalizePhone(
       result.phone || result.phone_number || call?.phone || overrides.phone ||
         payload.phone_number || payload.caller_phone
@@ -4259,6 +4366,8 @@ async function saveInboundCallSummary(data = {}) {
         full_name: snapshot.full_name,
         first_name: snapshot.first_name,
         last_name: snapshot.last_name,
+        purchase_city: snapshot.city,
+        purchase_state: snapshot.state,
         phone: snapshot.phone,
         email: snapshot.email,
         credit_score: snapshot.credit_score,
@@ -4460,6 +4569,8 @@ async function syncInboundMondayCaller(call) {
             full_name: initialData.full_name,
             first_name: initialData.first_name,
             last_name: initialData.last_name,
+            purchase_city: initialData.city,
+            purchase_state: initialData.state,
             phone: initialData.phone,
             email: initialData.email,
             credit_score: initialData.credit_score,
@@ -6216,6 +6327,8 @@ function publicCallResult(result = {}) {
     "inbound_intent",
     "first_name",
     "last_name",
+    "purchase_city",
+    "purchase_state",
     "phone_number",
     "email",
     "estimated_home_price",
@@ -6223,6 +6336,7 @@ function publicCallResult(result = {}) {
     "homebuying_timeline",
     "estimated_credit_score",
     "annual_household_income",
+    "two_year_employment_history",
     "two_year_tax_filing_status",
     "website_visited",
     "readiness_application_started",
@@ -7018,6 +7132,10 @@ async function executeInboundToolUnlocked(call, name, args) {
       credit_score: creditScore,
       annual_household_income: normalizeInboundAnnualIncome(
         safeArgs.annual_household_income
+      ),
+      two_year_employment_history: cleanText(
+        safeArgs.two_year_employment_history,
+        100
       ),
       two_year_tax_filing_status: cleanText(safeArgs.two_year_tax_filing_status, 50),
       tax_return_status: taxReturnStatus,
@@ -9274,21 +9392,30 @@ return true;
       [
         "credit_score",
         "annual_household_income",
-        "tax_return_status"
+        "tax_return_status",
+        "employment_history"
       ].includes(String(pendingQuestionType || ""))
     ) {
       const recognizedValue = pendingQuestionType === "credit_score"
         ? normalizeInboundCreditScore(transcript)
         : pendingQuestionType === "annual_household_income"
           ? normalizeInboundAnnualIncome(transcript)
-          : normalizeInboundTaxReturnStatus(transcript);
+          : pendingQuestionType === "tax_return_status"
+            ? normalizeInboundTaxReturnStatus(transcript)
+            : normalizeExplicitYesNo(transcript) === true
+              ? "Employed During Past 2 Years"
+              : normalizeExplicitYesNo(transcript) === false
+                ? "Not Employed During Past 2 Years"
+                : "";
       if (recognizedValue) {
         const activeCall = (await getCallById(call.call_id)) || call;
         const toolArgs = pendingQuestionType === "credit_score"
           ? { estimated_credit_score: recognizedValue }
           : pendingQuestionType === "annual_household_income"
             ? { annual_household_income: recognizedValue }
-            : { two_year_tax_filing_status: recognizedValue };
+            : pendingQuestionType === "tax_return_status"
+              ? { two_year_tax_filing_status: recognizedValue }
+              : { two_year_employment_history: recognizedValue };
         const saved = await executeInboundTool(
           activeCall,
           "save_inbound_caller_context",
@@ -9308,7 +9435,11 @@ return true;
 
     if (pendingQuestionType === "purchase_area") {
       const confirmedPurchaseArea = exactMeaningfulPurchaseArea(transcript);
-      if (!confirmedPurchaseArea) {
+      const confirmedPurchaseLocation = parseInboundPurchaseLocation(transcript);
+      if (
+        !confirmedPurchaseArea ||
+        (sessionCallPhase === "INBOUND" && !confirmedPurchaseLocation)
+      ) {
         requestAssistantResponse({
           queueIfBusy: true,
           allowWhileAwaiting: true,
@@ -9316,23 +9447,50 @@ return true;
           response: {
             output_modalities: ["audio"],
             instructions:
-              'Say exactly: "What city or area would you like to purchase in?" Say nothing else.'
+              sessionCallPhase === "INBOUND"
+                ? 'Say exactly: "What city and state would you like to purchase a home in?" Say nothing else.'
+                : 'Say exactly: "What city or area would you like to purchase in?" Say nothing else.'
           }
         });
         return;
       }
       await mergeCallResult(call.call_id, {
-        purchase_area: confirmedPurchaseArea
+        purchase_area: confirmedPurchaseArea,
+        ...(confirmedPurchaseLocation
+          ? {
+              purchase_city: confirmedPurchaseLocation.city,
+              purchase_state: confirmedPurchaseLocation.state
+            }
+          : {})
       });
       console.log(JSON.stringify({
         event: "purchase_area_confirmed",
         call_id: call.call_id,
-        purchase_area: confirmedPurchaseArea
+        purchase_area: confirmedPurchaseArea,
+        purchase_city: confirmedPurchaseLocation?.city || null,
+        purchase_state: confirmedPurchaseLocation?.state || null
       }));
       call = (await getCallById(call.call_id)) || call;
+      if (sessionCallPhase === "INBOUND" && INBOUND_MONDAY_CONNECTED) {
+        await persistCallSessionToMonday(call.call_id, {
+          forceFullState: false
+        });
+        call = (await getCallById(call.call_id)) || call;
+      }
 
       refreshActiveRealtimeInstructions();
       await endLocalWaitingState("purchase_area_confirmed");
+      if (sessionCallPhase === "INBOUND") {
+        requestAssistantResponse({
+          queueIfBusy: true,
+          response: {
+            output_modalities: ["audio"],
+            instructions:
+              'Say exactly: "Excellent. To make sure we head in the right direction, tell me which best describes why you\'re calling today: you\'ve already started the Readiness Assessment, you\'d like to know how to get started, you\'d like to know if you qualify or how much assistance may be available, or something else?" Say nothing else.'
+          }
+        });
+        return;
+      }
       requestAssistantResponse({
   queueIfBusy: true,
   response: {
