@@ -267,6 +267,11 @@ function buildInboundMondayUpdateValues({
       columns.purchaseTimeframe,
       ["Purchase_timeframe", "Purchase Timeframe"]
     ],
+    [
+      "job_history",
+      columns.jobHistory,
+      ["Job_History", "Job History"]
+    ],
     ["credit_score", columns.creditScore, ["Credit Score"]],
     [
       "tax_return_status",

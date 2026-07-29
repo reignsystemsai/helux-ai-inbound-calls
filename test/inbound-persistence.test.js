@@ -233,6 +233,7 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
     state: "text_mm5q3gq4",
     estimatedHomePrice: "text_mm5qxf89",
     purchaseTimeframe: "text_mm5q63c0",
+    jobHistory: "text_mm5q3dxr",
     email: "email_mm5f7560",
     creditScore: "text_mm5j48bj",
     annualIncome: "",
@@ -255,6 +256,11 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
       {
         id: columns.purchaseTimeframe,
         title: "Purchase_timeframe",
+        type: "text"
+      },
+      {
+        id: columns.jobHistory,
+        title: "Job_History",
         type: "text"
       },
       { id: columns.email, type: "email" },
@@ -280,6 +286,7 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
       state: "Georgia",
       estimated_home_price: "400000",
       purchase_timeframe: "Within six months",
+      job_history: "Employed During Past 2 Years",
       email: "jane@example.com",
       credit_score: "690",
       annual_household_income: "$70,000",
@@ -299,6 +306,7 @@ test("real inbound mapping uses Monday text, email, status, date, and long-text 
     text_mm5q3gq4: "Georgia",
     text_mm5qxf89: "400000",
     text_mm5q63c0: "Within six months",
+    text_mm5q3dxr: "Employed During Past 2 Years",
     text_mm5j48bj: "690",
     numbers_mm5annual: "70000",
     text_mm5jx81q: "2 Years Filed",

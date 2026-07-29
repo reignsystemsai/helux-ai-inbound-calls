@@ -766,6 +766,7 @@ const INBOUND_MONDAY = Object.freeze({
     state: "text_mm5q3gq4",
     estimatedHomePrice: "text_mm5qxf89",
     purchaseTimeframe: "text_mm5q63c0",
+    jobHistory: "text_mm5q3dxr",
     email: "email_mm5f7560",
     phoneNumber: "phone_mm5fdqn5",
     creditScore: "text_mm5j48bj",
@@ -1254,6 +1255,7 @@ INTENT ROUTING
 "Excellent. To make sure we head in the right direction, tell me which best describes why you're calling today: you've already started the Readiness Assessment, you'd like to know how to get started, you'd like to know if you qualify or how much assistance may be available, or something else?"
 - Save the caller's selected classification with save_inbound_caller_context, then continue immediately to CONTACT COLLECTION before beginning the selected talk track.
 - Use the answer only to choose the relevant existing path. Do not read the routing choices after the caller has already stated a clear purpose. Do not postpone CONTACT COLLECTION until the end of the selected talk track.
+- Never ask the caller to restate or re-explain why they are calling after the opening response and routing selection. Continue with the selected talk track.
 
 READINESS-ASSESSMENT MENTION LIMIT
 - The Readiness Assessment is a logical next step, not the conversation itself.
@@ -4262,6 +4264,12 @@ function inboundCallSnapshot(call, overrides = {}) {
       result.purchase_timeframe,
       overrides.purchase_timeframe
     ),
+    job_history: firstInboundContactValue(
+      500,
+      result.two_year_employment_history,
+      result.job_history,
+      overrides.job_history
+    ),
     phone: normalizePhone(
       result.phone || result.phone_number || call?.phone || overrides.phone ||
         payload.phone_number || payload.caller_phone
@@ -4439,6 +4447,7 @@ async function saveInboundCallSummary(data = {}) {
         purchase_state: snapshot.state,
         estimated_home_price: snapshot.estimated_home_price,
         purchase_timeframe: snapshot.purchase_timeframe,
+        job_history: snapshot.job_history,
         phone: snapshot.phone,
         email: snapshot.email,
         credit_score: snapshot.credit_score,
@@ -4644,6 +4653,7 @@ async function syncInboundMondayCaller(call) {
             purchase_state: initialData.state,
             estimated_home_price: initialData.estimated_home_price,
             purchase_timeframe: initialData.purchase_timeframe,
+            job_history: initialData.job_history,
             phone: initialData.phone,
             email: initialData.email,
             credit_score: initialData.credit_score,
