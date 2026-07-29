@@ -1316,10 +1316,10 @@ Continue directly to phone-number confirmation without a standalone acknowledgme
 
 EARLY EMAIL COLLECTION
 Use the inbound caller ID as phone_number. Ask exactly:
-"I have the phone number you're calling from ending in [Last Four Digits]. Is that correct?"
+"I have the last four of your phone as [Last Four Digits], is that correct?"
 
 Wait for the caller's response. If the caller confirms the number, say exactly:
-"Perfect, and what's a good email for you before we dive into things?"
+"And what's a good email for you?"
 
 If the caller says the number is incorrect, ask for the correct phone number, save it, and then say the same exact email question.
 
