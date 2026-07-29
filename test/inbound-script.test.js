@@ -109,3 +109,23 @@ test("the assistance maximum can be spoken only once per call", () => {
     /duplicateAssistanceMaximum[\s\S]{0,1000}DUPLICATE_ASSISTANCE_MAXIMUM/
   );
 });
+
+test("the how-to-get-started path restores the qualification flow", () => {
+  const serverSource = fs.readFileSync(
+    path.join(__dirname, "..", "server.js"),
+    "utf8"
+  );
+
+  assert.match(
+    serverSource,
+    /HOW TO GET STARTED[\s\S]{0,1200}would you like to know what most programs are looking for\?/
+  );
+  assert.match(
+    serverSource,
+    /would you like to know what most programs are looking for\?[\s\S]{0,300}BASIC READINESS CONVERSATION/
+  );
+  assert.match(
+    serverSource,
+    /function inboundQualificationStateInstruction[\s\S]{0,1600}Do not skip this requirement/
+  );
+});

@@ -1325,6 +1325,20 @@ If the caller says the number is incorrect, ask for the correct phone number, sa
 
 Save email and repeat it back once for confirmation. Do not ask for the email again later in the call unless the caller corrects it or specifically says a different email was used for an existing application. Then immediately return to the caller's question or move the call forward.
 
+HOW TO GET STARTED
+If the caller selects that they would like to know how to get started, say:
+"The best place to begin is dpahelpcenter.com."
+
+"The readiness application takes about two or three minutes, there is no credit check, and it gives the team the information needed to help you move forward."
+
+Then ask:
+"Have you already started looking at homes, [First Name]?"
+
+After the caller answers, ask:
+"[First Name], would you like to know what most programs are looking for?"
+
+If the caller says yes, continue directly to BASIC READINESS CONVERSATION and ask every approved qualification question one at a time.
+
 GENERAL DPA RESPONSE AMMUNITION
 Answer only the caller's actual question. Do not recite every approved response.
 
@@ -1611,6 +1625,44 @@ function inboundAssistanceMaximumStateInstruction(call) {
   ].join("\n");
 }
 
+function inboundMissingQualificationFields(call) {
+  const result = call?.result || {};
+  return [
+    [
+      "estimated_credit_score",
+      result.estimated_credit_score || result.credit_score
+    ],
+    ["annual_household_income", result.annual_household_income],
+    [
+      "two_year_tax_filing_status",
+      result.two_year_tax_filing_status || result.tax_return_status
+    ],
+    [
+      "two_year_employment_history",
+      result.two_year_employment_history || result.job_history
+    ]
+  ]
+    .filter(([, value]) => !cleanInboundContactValue(value, 500))
+    .map(([field]) => field);
+}
+
+function inboundQualificationStateInstruction(call) {
+  const missing = inboundMissingQualificationFields(call);
+  if (!missing.length) {
+    return [
+      "SESSION QUALIFICATION STATE",
+      "Credit score, annual household income, tax-return history, and employment history are all saved.",
+      "Do not repeat any qualification question. Continue from the current conversation stage."
+    ].join("\n");
+  }
+  return [
+    "SESSION QUALIFICATION STATE",
+    `The following required qualification answers are still missing: ${missing.join(", ")}.`,
+    "Before follow-up scheduling or closing, complete the existing REQUIRED PRE-CLOSING READINESS CHECK.",
+    "Ask only the missing approved qualification questions, one at a time, in their existing script order. Do not skip this requirement."
+  ].join("\n");
+}
+
 function buildDaisyInboundInstructions(call) {
   const payload = call?.payload || {};
   const callerPhone = validE164Phone(call?.phone)
@@ -1627,6 +1679,7 @@ function buildDaisyInboundInstructions(call) {
     inboundIntentStateInstruction(call),
     inboundPurchaseLocationStateInstruction(call),
     inboundAssistanceMaximumStateInstruction(call),
+    inboundQualificationStateInstruction(call),
     script
   ].join("\n\n");
 }
@@ -9570,6 +9623,7 @@ return true;
           );
         }
         call = (await getCallById(call.call_id)) || call;
+        refreshActiveRealtimeInstructions();
         await endLocalWaitingState(`${pendingQuestionType}_saved`);
         requestAssistantResponse({ queueIfBusy: true });
         return;
